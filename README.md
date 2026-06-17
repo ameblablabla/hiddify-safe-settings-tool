@@ -23,7 +23,8 @@ Run it, choose the language, then use the arrow keys and Enter.
 - Copies that link to the clipboard and opens Hiddify.
 - Detects running Amnezia / AmneziaWG processes that can conflict with Hiddify.
 - Offers to close those processes after explicit confirmation.
-- Optionally installs Flowseal zapret as a Windows service.
+- Downloads the VovaVPN zapret bundle when it is not already installed.
+- Optionally installs VovaVPN zapret as a Windows service.
 - Optionally adds Minecraft TCP port `25565` handling to the zapret strategy.
 - Keeps the original safe settings import/export feature.
 
@@ -56,16 +57,17 @@ This is safer and easier to recover from.
 
 If zapret is enabled, the tool:
 
-1. reuses an existing valid `C:\zapret\...` installation when found;
-2. otherwise downloads the latest Flowseal `zapret-discord-youtube` release;
-3. creates `000-vovavpn.bat` from a recommended strategy;
-4. optionally injects the Minecraft `25565` rule;
-5. installs the strategy through the bundled `service.bat`.
+1. reuses an existing valid VovaVPN zapret installation when `000-vovavpn.bat` is present;
+2. otherwise downloads `vovavpn-zapret.zip` from this repository release;
+3. extracts it to `C:\zapret\vovavpn-zapret`;
+4. uses `000-vovavpn.bat` as the preferred strategy;
+5. optionally injects the Minecraft `25565` rule;
+6. installs the strategy through the bundled `service.bat`.
 
-The preferred base strategy is:
+The preferred strategy is:
 
 ```text
-general (ALT).bat
+000-vovavpn.bat
 ```
 
 If it is unavailable, the tool falls back to other bundled general strategies.

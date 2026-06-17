@@ -21,11 +21,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.0.1";
+static const char* kVersion = "2.1.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.0.1/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.1.0/hiddify-app-settings.zip";
+static const char* kZapretBundleUrl =
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.1.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -770,6 +772,10 @@ bool validZapretDir(const fs::path& dir) {
     return fs::exists(dir / "service.bat") && fs::exists(dir / "bin" / "winws.exe");
 }
 
+bool validVovaZapretDir(const fs::path& dir) {
+    return validZapretDir(dir) && fs::exists(dir / "000-vovavpn.bat");
+}
+
 std::optional<fs::path> findZapretDir() {
     std::vector<fs::path> candidates = {
         fs::path(kZapretDefaultDir),
@@ -778,13 +784,13 @@ std::optional<fs::path> findZapretDir() {
     };
 
     for (const auto& c : candidates) {
-        if (validZapretDir(c)) return c;
+        if (validVovaZapretDir(c)) return c;
     }
 
     fs::path root = L"C:\\zapret";
     if (fs::exists(root)) {
         for (const auto& entry : fs::directory_iterator(root)) {
-            if (entry.is_directory() && validZapretDir(entry.path())) return entry.path();
+            if (entry.is_directory() && validVovaZapretDir(entry.path())) return entry.path();
         }
     }
     return std::nullopt;
@@ -803,10 +809,7 @@ fs::path ensureZapretDownloaded() {
         L"$zip=Join-Path $tmp 'zapret.zip'; "
         L"New-Item -ItemType Directory -Path $tmp -Force | Out-Null; "
         L"$headers=@{'User-Agent'='VovaVPN-Setup'}; "
-        L"$release=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest'; "
-        L"$asset=$release.assets | Where-Object { $_.name -like 'zapret-discord-youtube-*.zip' } | Select-Object -First 1; "
-        L"if (-not $asset) { throw 'Zapret zip asset was not found' }; "
-        L"Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $asset.browser_download_url -OutFile $zip; "
+        L"Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri " + quotePsString(widen(kZapretBundleUrl)) + L" -OutFile $zip; "
         L"$extract=Join-Path $tmp 'extract'; "
         L"Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force; "
         L"$service=Get-ChildItem -LiteralPath $extract -Recurse -Filter service.bat | Select-Object -First 1; "
@@ -816,10 +819,10 @@ fs::path ensureZapretDownloaded() {
         L"Copy-Item -LiteralPath (Join-Path $src '*') -Destination $target -Recurse -Force; "
         L"Remove-Item -LiteralPath $tmp -Recurse -Force; ";
 
-    std::cout << tr("Скачиваю zapret Flowseal...\n", "Downloading Flowseal zapret...\n");
+    std::cout << tr("Скачиваю VovaVPN zapret...\n", "Downloading VovaVPN zapret...\n");
     int code = runPowerShell(ps, false);
-    if (code != 0 || !validZapretDir(target)) {
-        throw std::runtime_error("Failed to download or unpack zapret");
+    if (code != 0 || !validVovaZapretDir(target)) {
+        throw std::runtime_error("Failed to download or unpack VovaVPN zapret");
     }
     return target;
 }
@@ -842,6 +845,9 @@ std::vector<fs::path> listZapretStrategies(const fs::path& dir) {
 }
 
 fs::path chooseZapretStrategy(const fs::path& dir) {
+    fs::path vova = dir / "000-vovavpn.bat";
+    if (fs::exists(vova)) return vova;
+
     std::vector<std::string> preferred = {
         "general (ALT).bat",
         "general.bat",

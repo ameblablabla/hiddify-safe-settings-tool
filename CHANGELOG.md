@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0 - Bundled VovaVPN Zapret
+
+- Added VovaVPN zapret bundle download support.
+- The setup tool now requires `000-vovavpn.bat` and downloads the VovaVPN zapret package when it is missing.
+- The preferred zapret strategy is now `000-vovavpn.bat`.
+- Updated release URLs to `v2.1.0`.
+
 ## 2.0.1 - Console Render Hotfix
 
 - Fixed a console rendering issue where the first menu could appear as a blank black window.
