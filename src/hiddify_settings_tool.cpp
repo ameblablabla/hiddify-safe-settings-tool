@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <commdlg.h>
-#include <shlobj.h>
+#include <shellapi.h>
+#include <tlhelp32.h>
 
 #include <algorithm>
 #include <cctype>
@@ -10,12 +11,22 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include <conio.h>
+
 namespace fs = std::filesystem;
+
+static const char* kVersion = "2.0.0";
+static const char* kHiddifyInstallerUrl =
+    "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
+static const char* kSafeSettingsUrl =
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v1.0.0/hiddify-app-settings.zip";
+static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
     "profile", "profiles", "subscription", "config", "configs",
@@ -30,6 +41,17 @@ static const std::vector<std::string> kForbiddenContent = {
     "\"private_key\"", "\"short_id\"", "\"server_port\"",
     "xtls-rprx-vision", "reality", "wireguard"
 };
+
+enum class Lang {
+    Ru,
+    En
+};
+
+static Lang gLang = Lang::Ru;
+
+std::string tr(const char* ru, const char* en) {
+    return gLang == Lang::Ru ? std::string(ru) : std::string(en);
+}
 
 std::wstring widen(const std::string& s) {
     if (s.empty()) return L"";
@@ -69,19 +91,10 @@ std::string readFile(const fs::path& path) {
 }
 
 void writeFile(const fs::path& path, const std::string& data) {
+    fs::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::binary);
     if (!out) throw std::runtime_error("Cannot write file: " + path.string());
     out.write(data.data(), (std::streamsize)data.size());
-}
-
-fs::path hiddifyDir() {
-    const char* appdata = std::getenv("APPDATA");
-    if (!appdata) throw std::runtime_error("APPDATA is not set");
-    return fs::path(appdata) / "Hiddify" / "hiddify";
-}
-
-fs::path sharedPrefsPath() {
-    return hiddifyDir() / "shared_preferences.json";
 }
 
 std::string timestamp() {
@@ -121,14 +134,28 @@ std::wstring quotePsString(const std::wstring& input) {
     return L"'" + escaped + L"'";
 }
 
-int runPowerShell(const std::wstring& command) {
-    std::wstring full = L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command " + command;
+std::wstring quoteCmd(const fs::path& path) {
+    std::wstring s = path.wstring();
+    std::wstring out = L"\"";
+    for (wchar_t c : s) {
+        if (c == L'"') out += L"\\\"";
+        else out += c;
+    }
+    out += L"\"";
+    return out;
+}
+
+int runProcess(const std::wstring& command, bool hidden = false) {
     STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
-    std::vector<wchar_t> cmd(full.begin(), full.end());
+    if (hidden) si.dwFlags = STARTF_USESHOWWINDOW;
+    if (hidden) si.wShowWindow = SW_HIDE;
+
+    std::vector<wchar_t> cmd(command.begin(), command.end());
     cmd.push_back(L'\0');
-    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    DWORD flags = hidden ? CREATE_NO_WINDOW : 0;
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi)) {
         return -1;
     }
     WaitForSingleObject(pi.hProcess, INFINITE);
@@ -137,6 +164,246 @@ int runPowerShell(const std::wstring& command) {
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     return (int)code;
+}
+
+int runPowerShell(const std::wstring& command, bool hidden = true) {
+    return runProcess(L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command " + command, hidden);
+}
+
+bool launchAndWaitElevated(const fs::path& file, const std::wstring& parameters = L"") {
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpVerb = L"runas";
+    sei.lpFile = file.c_str();
+    sei.lpParameters = parameters.empty() ? nullptr : parameters.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) return false;
+    if (sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        CloseHandle(sei.hProcess);
+    }
+    return true;
+}
+
+void enableVirtualTerminal() {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD mode = 0;
+    if (hOut != INVALID_HANDLE_VALUE && GetConsoleMode(hOut, &mode)) {
+        mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+        SetConsoleMode(hOut, mode);
+    }
+}
+
+void clearScreen() {
+    std::cout << "\x1b[2J\x1b[H";
+}
+
+void color(const char* ansi) {
+    std::cout << ansi;
+}
+
+void resetColor() {
+    std::cout << "\x1b[0m";
+}
+
+void printHeader(const std::string& subtitle = "") {
+    color("\x1b[38;2;228;188;58m");
+    std::cout << "VovaVPN Hiddify Setup Tool v" << kVersion << "\n";
+    resetColor();
+    std::cout << "------------------------------------------------------------\n";
+    if (!subtitle.empty()) {
+        std::cout << subtitle << "\n\n";
+    }
+}
+
+void waitKey() {
+    std::cout << "\n" << tr("Нажмите любую клавишу...", "Press any key...") << "\n";
+    _getch();
+}
+
+int selectMenu(const std::string& title, const std::vector<std::string>& items, int selected = 0) {
+    if (items.empty()) return -1;
+    selected = std::clamp(selected, 0, (int)items.size() - 1);
+
+    while (true) {
+        clearScreen();
+        printHeader(title);
+        std::cout << tr("Используйте стрелки вверх/вниз и Enter. Esc - назад.\n\n",
+                         "Use Up/Down arrows and Enter. Esc - back.\n\n");
+        for (int i = 0; i < (int)items.size(); ++i) {
+            if (i == selected) {
+                color("\x1b[30;48;2;228;188;58m");
+                std::cout << "  > " << items[i] << "  ";
+                resetColor();
+                std::cout << "\n";
+            } else {
+                std::cout << "    " << items[i] << "\n";
+            }
+        }
+
+        int ch = _getch();
+        if (ch == 27) return -1;
+        if (ch == 13) return selected;
+        if (ch >= '1' && ch <= '9') {
+            int index = ch - '1';
+            if (index >= 0 && index < (int)items.size()) return index;
+        }
+        if (ch == 0 || ch == 224) {
+            int ext = _getch();
+            if (ext == 72) selected = (selected - 1 + (int)items.size()) % (int)items.size();
+            if (ext == 80) selected = (selected + 1) % (int)items.size();
+        }
+    }
+}
+
+bool confirm(const std::string& question, bool defaultYes = false) {
+    std::vector<std::string> items;
+    if (defaultYes) {
+        items = {tr("Да", "Yes"), tr("Нет", "No")};
+    } else {
+        items = {tr("Нет", "No"), tr("Да", "Yes")};
+    }
+    int choice = selectMenu(question, items, 0);
+    if (choice < 0) return false;
+    return defaultYes ? choice == 0 : choice == 1;
+}
+
+bool isAdmin() {
+    BOOL isMember = FALSE;
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    PSID adminGroup = nullptr;
+    if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
+                                 &adminGroup)) {
+        CheckTokenMembership(nullptr, adminGroup, &isMember);
+        FreeSid(adminGroup);
+    }
+    return isMember == TRUE;
+}
+
+fs::path appDataRoaming() {
+    const char* appdata = std::getenv("APPDATA");
+    if (!appdata) throw std::runtime_error("APPDATA is not set");
+    return fs::path(appdata);
+}
+
+fs::path appDataLocal() {
+    const char* local = std::getenv("LOCALAPPDATA");
+    if (!local) throw std::runtime_error("LOCALAPPDATA is not set");
+    return fs::path(local);
+}
+
+fs::path programFiles() {
+    const char* pf = std::getenv("ProgramFiles");
+    if (!pf) return {};
+    return fs::path(pf);
+}
+
+fs::path programFilesX86() {
+    const char* pf = std::getenv("ProgramFiles(x86)");
+    if (!pf) return {};
+    return fs::path(pf);
+}
+
+std::vector<fs::path> hiddifyPreferencePaths() {
+    std::vector<fs::path> paths;
+    paths.push_back(appDataRoaming() / "Hiddify" / "hiddify" / "shared_preferences.json");
+    paths.push_back(appDataLocal() / "Packages" / "Hiddify.HiddifyNext_pvn3df8hp03bc" /
+                    "LocalCache" / "Roaming" / "Hiddify" / "hiddify" / "shared_preferences.json");
+    return paths;
+}
+
+std::vector<fs::path> hiddifyExeCandidates() {
+    std::vector<fs::path> p;
+    fs::path local = appDataLocal();
+    fs::path pf = programFiles();
+    fs::path pfx86 = programFilesX86();
+
+    p.push_back(local / "Programs" / "Hiddify" / "Hiddify.exe");
+    p.push_back(local / "Programs" / "Hiddify" / "HiddifyNext.exe");
+    p.push_back(local / "Hiddify" / "Hiddify.exe");
+    p.push_back(local / "Hiddify" / "HiddifyNext.exe");
+    if (!pf.empty()) {
+        p.push_back(pf / "Hiddify" / "Hiddify.exe");
+        p.push_back(pf / "Hiddify" / "HiddifyNext.exe");
+        p.push_back(pf / "hiddify" / "Hiddify.exe");
+        p.push_back(pf / "hiddify" / "HiddifyNext.exe");
+    }
+    if (!pfx86.empty()) {
+        p.push_back(pfx86 / "Hiddify" / "Hiddify.exe");
+        p.push_back(pfx86 / "Hiddify" / "HiddifyNext.exe");
+    }
+    return p;
+}
+
+std::optional<fs::path> findHiddifyExe() {
+    for (const auto& p : hiddifyExeCandidates()) {
+        if (fs::exists(p)) return p;
+    }
+    return std::nullopt;
+}
+
+void downloadFile(const std::string& url, const fs::path& out) {
+    fs::create_directories(out.parent_path());
+    std::wstring ps =
+        L"$ProgressPreference='SilentlyContinue'; "
+        L"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+        L"Invoke-WebRequest -UseBasicParsing -Uri " + quotePsString(widen(url)) +
+        L" -OutFile " + quotePs(out) + L"; "
+        L"if (!(Test-Path " + quotePs(out) + L")) { exit 2 }";
+    int code = runPowerShell(ps, true);
+    if (code != 0 || !fs::exists(out)) {
+        throw std::runtime_error("Download failed: " + url);
+    }
+}
+
+void installHiddifyIfNeeded() {
+    clearScreen();
+    printHeader(tr("Проверка Hiddify", "Checking Hiddify"));
+
+    auto existing = findHiddifyExe();
+    if (existing) {
+        std::cout << tr("Hiddify найден:\n", "Hiddify found:\n") << existing->string() << "\n";
+        waitKey();
+        return;
+    }
+
+    std::cout << tr("Hiddify не найден. Можно скачать официальный установщик и запустить его сейчас.\n",
+                     "Hiddify was not found. The official installer can be downloaded and started now.\n");
+    if (!confirm(tr("Скачать и запустить установщик Hiddify?", "Download and run the Hiddify installer?"), true)) {
+        return;
+    }
+
+    fs::path temp = makeTempDir("hiddify-installer");
+    fs::path installer = temp / "Hiddify-Windows-Setup-x64.exe";
+    std::cout << tr("Скачиваю установщик...\n", "Downloading installer...\n");
+    downloadFile(kHiddifyInstallerUrl, installer);
+
+    std::cout << tr("Запускаю установщик. Пройдите установку и вернитесь в это окно.\n",
+                     "Starting the installer. Finish setup, then return to this window.\n");
+    SHELLEXECUTEINFOW sei{};
+    sei.cbSize = sizeof(sei);
+    sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+    sei.lpFile = installer.c_str();
+    sei.nShow = SW_SHOWNORMAL;
+    if (!ShellExecuteExW(&sei)) {
+        fs::remove_all(temp);
+        throw std::runtime_error("Failed to start Hiddify installer");
+    }
+    if (sei.hProcess) {
+        WaitForSingleObject(sei.hProcess, INFINITE);
+        CloseHandle(sei.hProcess);
+    }
+    fs::remove_all(temp);
+
+    if (findHiddifyExe()) {
+        std::cout << tr("Hiddify установлен.\n", "Hiddify is installed.\n");
+    } else {
+        std::cout << tr("Я не смог автоматически найти Hiddify после установки. Если он открылся, это нормально.\n",
+                         "Hiddify was not found automatically after setup. If it opened, that is okay.\n");
+    }
+    waitKey();
 }
 
 std::string sanitizeSharedPreferences(const std::string& raw) {
@@ -209,52 +476,17 @@ fs::path openZipDialog() {
     return fs::path(fileName);
 }
 
-void exportSettings() {
-    fs::path prefs = sharedPrefsPath();
-    if (!fs::exists(prefs)) throw std::runtime_error("Hiddify shared_preferences.json not found");
-
-    fs::path destination = saveZipDialog();
-    if (destination.empty()) {
-        std::cout << "Export cancelled.\n";
-        return;
+void copyPreferencesWithBackup(const fs::path& prefs, const std::string& safeData) {
+    fs::create_directories(prefs.parent_path());
+    if (fs::exists(prefs)) {
+        fs::path backup = prefs;
+        backup += ".bak-" + timestamp();
+        fs::copy_file(prefs, backup, fs::copy_options::overwrite_existing);
     }
-
-    fs::path temp = makeTempDir("hiddify-settings-export");
-    try {
-        std::string raw = readFile(prefs);
-        std::string safe = sanitizeSharedPreferences(raw);
-        writeFile(temp / "shared_preferences.safe.json", safe);
-        writeFile(temp / "manifest.json",
-                  "{\n"
-                  "  \"hiddify_safe_settings_export\": true,\n"
-                  "  \"version\": 1,\n"
-                  "  \"contains_profiles\": false,\n"
-                  "  \"contains_connection_configs\": false\n"
-                  "}\n");
-
-        if (fs::exists(destination)) fs::remove(destination);
-        std::wstring zipSource = (temp / "*").wstring();
-        std::wstring ps = L"Compress-Archive -Path " + quotePsString(zipSource) +
-                          L" -DestinationPath " + quotePs(destination) + L" -Force";
-        int code = runPowerShell(ps);
-        if (code != 0 || !fs::exists(destination)) {
-            throw std::runtime_error("Compress-Archive failed");
-        }
-        std::cout << "Exported safe Hiddify app settings to:\n" << destination.string() << "\n";
-    } catch (...) {
-        fs::remove_all(temp);
-        throw;
-    }
-    fs::remove_all(temp);
+    writeFile(prefs, safeData);
 }
 
-void importSettings() {
-    fs::path archive = openZipDialog();
-    if (archive.empty()) {
-        std::cout << "Import cancelled.\n";
-        return;
-    }
-
+void importSettingsArchive(const fs::path& archive) {
     fs::path temp = makeTempDir("hiddify-settings-import");
     try {
         std::wstring ps = L"Expand-Archive -LiteralPath " + quotePs(archive) +
@@ -279,13 +511,13 @@ void importSettings() {
             throw std::runtime_error("Invalid archive: " + validationError);
         }
 
-        fs::path prefs = sharedPrefsPath();
-        fs::create_directories(prefs.parent_path());
-        if (fs::exists(prefs)) {
-            fs::copy_file(prefs, prefs.string() + ".bak-" + timestamp(), fs::copy_options::overwrite_existing);
+        auto prefs = hiddifyPreferencePaths();
+        copyPreferencesWithBackup(prefs.front(), safeData);
+        for (size_t i = 1; i < prefs.size(); ++i) {
+            if (fs::exists(prefs[i].parent_path())) {
+                copyPreferencesWithBackup(prefs[i], safeData);
+            }
         }
-        writeFile(prefs, safeData);
-        std::cout << "Imported safe Hiddify app settings.\nRestart Hiddify to apply them.\n";
     } catch (...) {
         fs::remove_all(temp);
         throw;
@@ -293,29 +525,535 @@ void importSettings() {
     fs::remove_all(temp);
 }
 
-int main() {
+void exportSettings() {
+    fs::path prefs;
+    for (const auto& p : hiddifyPreferencePaths()) {
+        if (fs::exists(p)) {
+            prefs = p;
+            break;
+        }
+    }
+    if (prefs.empty()) throw std::runtime_error("Hiddify shared_preferences.json not found");
+
+    fs::path destination = saveZipDialog();
+    if (destination.empty()) return;
+
+    fs::path temp = makeTempDir("hiddify-settings-export");
+    try {
+        std::string raw = readFile(prefs);
+        std::string safe = sanitizeSharedPreferences(raw);
+        writeFile(temp / "shared_preferences.safe.json", safe);
+        writeFile(temp / "manifest.json",
+                  "{\n"
+                  "  \"hiddify_safe_settings_export\": true,\n"
+                  "  \"version\": 1,\n"
+                  "  \"contains_profiles\": false,\n"
+                  "  \"contains_connection_configs\": false\n"
+                  "}\n");
+
+        if (fs::exists(destination)) fs::remove(destination);
+        std::wstring zipSource = (temp / "*").wstring();
+        std::wstring ps = L"Compress-Archive -Path " + quotePsString(zipSource) +
+                          L" -DestinationPath " + quotePs(destination) + L" -Force";
+        int code = runPowerShell(ps);
+        if (code != 0 || !fs::exists(destination)) {
+            throw std::runtime_error("Compress-Archive failed");
+        }
+        std::cout << tr("Экспортировано:\n", "Exported:\n") << destination.string() << "\n";
+    } catch (...) {
+        fs::remove_all(temp);
+        throw;
+    }
+    fs::remove_all(temp);
+}
+
+void importSettingsFromFile() {
+    fs::path archive = openZipDialog();
+    if (archive.empty()) return;
+    importSettingsArchive(archive);
+    std::cout << tr("Безопасные настройки Hiddify импортированы.\n",
+                     "Safe Hiddify settings were imported.\n");
+}
+
+void importBundledSettings() {
+    clearScreen();
+    printHeader(tr("Импорт настроек Hiddify", "Import Hiddify settings"));
+    fs::path temp = makeTempDir("vovavpn-settings");
+    fs::path archive = temp / "hiddify-app-settings.zip";
+    try {
+        std::cout << tr("Скачиваю настройки VovaVPN...\n", "Downloading VovaVPN settings...\n");
+        downloadFile(kSafeSettingsUrl, archive);
+        importSettingsArchive(archive);
+        std::cout << tr("Настройки импортированы. Если Hiddify открыт, перезапустите его.\n",
+                         "Settings were imported. Restart Hiddify if it is open.\n");
+    } catch (...) {
+        fs::remove_all(temp);
+        throw;
+    }
+    fs::remove_all(temp);
+    waitKey();
+}
+
+bool setClipboardText(const std::string& utf8) {
+    std::wstring text = widen(utf8);
+    if (!OpenClipboard(nullptr)) return false;
+    EmptyClipboard();
+
+    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (!hMem) {
+        CloseClipboard();
+        return false;
+    }
+    void* ptr = GlobalLock(hMem);
+    memcpy(ptr, text.c_str(), bytes);
+    GlobalUnlock(hMem);
+    SetClipboardData(CF_UNICODETEXT, hMem);
+    CloseClipboard();
+    return true;
+}
+
+std::string getClipboardText() {
+    std::string out;
+    if (!OpenClipboard(nullptr)) return out;
+    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+    if (hData) {
+        wchar_t* text = (wchar_t*)GlobalLock(hData);
+        if (text) {
+            out = narrow(text);
+            GlobalUnlock(hData);
+        }
+    }
+    CloseClipboard();
+    return out;
+}
+
+bool looksLikeVpnConfig(const std::string& value) {
+    std::string low = lowerCopy(value);
+    return low.rfind("vless://", 0) == 0 ||
+           low.rfind("vmess://", 0) == 0 ||
+           low.rfind("trojan://", 0) == 0 ||
+           low.rfind("ss://", 0) == 0 ||
+           low.rfind("http://", 0) == 0 ||
+           low.rfind("https://", 0) == 0;
+}
+
+void launchHiddify() {
+    auto exe = findHiddifyExe();
+    if (exe) {
+        ShellExecuteW(nullptr, L"open", exe->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    } else {
+        ShellExecuteW(nullptr, L"open", L"hiddify://", nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
+void copyVpnConfigAndLaunchHiddify() {
+    clearScreen();
+    printHeader(tr("VPN-конфиг", "VPN config"));
+
+    std::string clip = getClipboardText();
+    std::vector<std::string> items;
+    if (looksLikeVpnConfig(clip)) {
+        items.push_back(tr("Использовать ссылку из буфера обмена", "Use config link from clipboard"));
+    }
+    items.push_back(tr("Вставить ссылку вручную", "Paste config link manually"));
+    items.push_back(tr("Пропустить", "Skip"));
+
+    int choice = selectMenu(tr("Добавление VPN-конфига", "Adding VPN config"), items, 0);
+    if (choice < 0 || items[choice] == tr("Пропустить", "Skip")) return;
+
+    std::string config = clip;
+    if (items[choice] == tr("Вставить ссылку вручную", "Paste config link manually")) {
+        clearScreen();
+        printHeader(tr("Вставьте VPN-ссылку", "Paste VPN link"));
+        std::cout << tr("Вставьте VLESS/VMess/Trojan/подписку и нажмите Enter:\n",
+                         "Paste a VLESS/VMess/Trojan/subscription link and press Enter:\n");
+        std::getline(std::cin, config);
+    }
+
+    if (!looksLikeVpnConfig(config)) {
+        std::cout << tr("Это не похоже на VPN-ссылку. Я не буду импортировать мусор.\n",
+                         "This does not look like a VPN link. It will not be imported.\n");
+        waitKey();
+        return;
+    }
+
+    if (!setClipboardText(config)) {
+        throw std::runtime_error("Failed to write VPN config to clipboard");
+    }
+
+    launchHiddify();
+    clearScreen();
+    printHeader(tr("Конфиг скопирован", "Config copied"));
+    std::cout << tr(
+        "VPN-ссылка уже в буфере обмена.\n\n"
+        "В Hiddify нажмите плюс / Add Config и выберите Import from Clipboard.\n"
+        "Это безопаснее, чем тайно править приватные файлы профиля.\n",
+        "The VPN link is in the clipboard.\n\n"
+        "In Hiddify, click plus / Add Config and choose Import from Clipboard.\n"
+        "This is safer than silently editing private profile files.\n");
+    waitKey();
+}
+
+struct ProcessInfo {
+    DWORD pid;
+    std::wstring name;
+};
+
+std::vector<ProcessInfo> findAmneziaProcesses() {
+    std::vector<ProcessInfo> result;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return result;
+
+    PROCESSENTRY32W pe{};
+    pe.dwSize = sizeof(pe);
+    if (Process32FirstW(snap, &pe)) {
+        do {
+            std::wstring name = pe.szExeFile;
+            std::string low = lowerCopy(narrow(name));
+            if (low.find("amnezia") != std::string::npos || low.find("amneziawg") != std::string::npos) {
+                result.push_back({pe.th32ProcessID, name});
+            }
+        } while (Process32NextW(snap, &pe));
+    }
+    CloseHandle(snap);
+    return result;
+}
+
+void terminateProcess(DWORD pid) {
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
+    if (h) {
+        TerminateProcess(h, 0);
+        CloseHandle(h);
+    }
+}
+
+void handleAmneziaConflict() {
+    auto processes = findAmneziaProcesses();
+    if (processes.empty()) {
+        std::cout << tr("Процессы Amnezia/AmneziaWG не найдены.\n",
+                         "No Amnezia/AmneziaWG processes were found.\n");
+        return;
+    }
+
+    clearScreen();
+    printHeader(tr("Конфликт Amnezia", "Amnezia conflict"));
+    std::cout << tr(
+        "На компьютере найдены процессы Amnezia/AmneziaWG. Они часто конфликтуют с Hiddify.\n"
+        "Программа может закрыть запущенные процессы. Удалять Amnezia автоматически я не буду.\n\n",
+        "Amnezia/AmneziaWG processes were found. They often conflict with Hiddify.\n"
+        "This tool can close running processes. It will not uninstall Amnezia automatically.\n\n");
+
+    for (const auto& p : processes) {
+        std::cout << "  " << narrow(p.name) << " (PID " << p.pid << ")\n";
+    }
+
+    std::vector<std::string> actions = {
+        tr("Закрыть процессы Amnezia", "Close Amnezia processes"),
+        tr("Открыть окно удаления программ", "Open Apps uninstall settings"),
+        tr("Оставить как есть", "Leave as is")
+    };
+    int choice = selectMenu(tr("Что сделать с Amnezia?", "What should be done with Amnezia?"), actions, 0);
+    if (choice == 0) {
+        for (const auto& p : processes) terminateProcess(p.pid);
+        std::cout << tr("Процессы закрыты.\n", "Processes closed.\n");
+        waitKey();
+    } else if (choice == 1) {
+        ShellExecuteW(nullptr, L"open", L"ms-settings:appsfeatures", nullptr, nullptr, SW_SHOWNORMAL);
+    }
+}
+
+bool validZapretDir(const fs::path& dir) {
+    return fs::exists(dir / "service.bat") && fs::exists(dir / "bin" / "winws.exe");
+}
+
+std::optional<fs::path> findZapretDir() {
+    std::vector<fs::path> candidates = {
+        fs::path(kZapretDefaultDir),
+        fs::path(L"C:\\zapret\\zapret-discord-youtube-1.9.9c"),
+        fs::path(L"C:\\zapret\\zapret-discord-youtube")
+    };
+
+    for (const auto& c : candidates) {
+        if (validZapretDir(c)) return c;
+    }
+
+    fs::path root = L"C:\\zapret";
+    if (fs::exists(root)) {
+        for (const auto& entry : fs::directory_iterator(root)) {
+            if (entry.is_directory() && validZapretDir(entry.path())) return entry.path();
+        }
+    }
+    return std::nullopt;
+}
+
+fs::path ensureZapretDownloaded() {
+    if (auto found = findZapretDir()) return *found;
+
+    fs::path target = kZapretDefaultDir;
+    std::wstring ps =
+        L"$ErrorActionPreference='Stop'; "
+        L"$ProgressPreference='SilentlyContinue'; "
+        L"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
+        L"$target=" + quotePs(target) + L"; "
+        L"$tmp=Join-Path $env:TEMP ('vovavpn-zapret-' + [guid]::NewGuid().ToString()); "
+        L"$zip=Join-Path $tmp 'zapret.zip'; "
+        L"New-Item -ItemType Directory -Path $tmp -Force | Out-Null; "
+        L"$headers=@{'User-Agent'='VovaVPN-Setup'}; "
+        L"$release=Invoke-RestMethod -Headers $headers -Uri 'https://api.github.com/repos/Flowseal/zapret-discord-youtube/releases/latest'; "
+        L"$asset=$release.assets | Where-Object { $_.name -like 'zapret-discord-youtube-*.zip' } | Select-Object -First 1; "
+        L"if (-not $asset) { throw 'Zapret zip asset was not found' }; "
+        L"Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $asset.browser_download_url -OutFile $zip; "
+        L"$extract=Join-Path $tmp 'extract'; "
+        L"Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force; "
+        L"$service=Get-ChildItem -LiteralPath $extract -Recurse -Filter service.bat | Select-Object -First 1; "
+        L"if (-not $service) { throw 'service.bat was not found in archive' }; "
+        L"$src=Split-Path -Parent $service.FullName; "
+        L"New-Item -ItemType Directory -Path $target -Force | Out-Null; "
+        L"Copy-Item -LiteralPath (Join-Path $src '*') -Destination $target -Recurse -Force; "
+        L"Remove-Item -LiteralPath $tmp -Recurse -Force; ";
+
+    std::cout << tr("Скачиваю zapret Flowseal...\n", "Downloading Flowseal zapret...\n");
+    int code = runPowerShell(ps, false);
+    if (code != 0 || !validZapretDir(target)) {
+        throw std::runtime_error("Failed to download or unpack zapret");
+    }
+    return target;
+}
+
+std::vector<fs::path> listZapretStrategies(const fs::path& dir) {
+    std::vector<fs::path> result;
+    if (!fs::exists(dir)) return result;
+    for (const auto& entry : fs::directory_iterator(dir)) {
+        if (!entry.is_regular_file()) continue;
+        fs::path p = entry.path();
+        std::string name = lowerCopy(p.filename().string());
+        if (p.extension() == ".bat" && name.rfind("service", 0) != 0 && name.rfind("000-vovavpn", 0) != 0) {
+            result.push_back(p);
+        }
+    }
+    std::sort(result.begin(), result.end(), [](const fs::path& a, const fs::path& b) {
+        return lowerCopy(a.filename().string()) < lowerCopy(b.filename().string());
+    });
+    return result;
+}
+
+fs::path chooseZapretStrategy(const fs::path& dir) {
+    std::vector<std::string> preferred = {
+        "general (ALT).bat",
+        "general.bat",
+        "general (FAKE TLS AUTO).bat",
+        "general (SIMPLE FAKE).bat"
+    };
+    for (const auto& name : preferred) {
+        fs::path p = dir / name;
+        if (fs::exists(p)) return p;
+    }
+    auto all = listZapretStrategies(dir);
+    if (!all.empty()) return all.front();
+    throw std::runtime_error("No zapret strategy .bat files found");
+}
+
+std::string replaceFirstWfTcp(const std::string& content) {
+    size_t pos = content.find("--wf-tcp=");
+    if (pos == std::string::npos) return content;
+    size_t valueStart = pos + 9;
+    size_t valueEnd = content.find_first_of(" \t\r\n^", valueStart);
+    if (valueEnd == std::string::npos) valueEnd = content.size();
+    std::string value = content.substr(valueStart, valueEnd - valueStart);
+    if (value.find("25565") != std::string::npos) return content;
+
+    std::string out = content;
+    out.insert(valueEnd, ",25565");
+    return out;
+}
+
+std::string ensureMinecraftRule(std::string content) {
+    content = replaceFirstWfTcp(content);
+    if (content.find("--filter-tcp=25565") != std::string::npos) return content;
+
+    const std::string rule =
+        "--filter-tcp=25565 --ipset-exclude=\"%LISTS%ipset-exclude.txt\" "
+        "--dpi-desync-any-protocol=1 --dpi-desync-cutoff=n5 "
+        "--dpi-desync=multisplit --dpi-desync-split-seqovl=582 "
+        "--dpi-desync-split-pos=1 "
+        "--dpi-desync-split-seqovl-pattern=\"%BIN%tls_clienthello_4pda_to.bin\" --new ^\r\n";
+
+    std::istringstream in(content);
+    std::ostringstream out;
+    std::string line;
+    bool inserted = false;
+    while (std::getline(in, line)) {
+        out << line << "\n";
+        if (!inserted && line.find("%BIN%winws.exe") != std::string::npos) {
+            out << rule;
+            inserted = true;
+        }
+    }
+    if (!inserted) out << rule;
+    return out.str();
+}
+
+fs::path prepareVovaStrategy(const fs::path& zapretDir, const fs::path& sourceStrategy, bool minecraft) {
+    std::string content = readFile(sourceStrategy);
+    if (minecraft) content = ensureMinecraftRule(content);
+
+    fs::path target = zapretDir / "000-vovavpn.bat";
+    writeFile(target, content);
+    return target;
+}
+
+void installZapretService(bool minecraft) {
+    if (!isAdmin()) {
+        fs::path self;
+        wchar_t buf[MAX_PATH]{};
+        GetModuleFileNameW(nullptr, buf, MAX_PATH);
+        self = buf;
+        std::wstring args = L"--install-zapret";
+        if (minecraft) args += L" --minecraft";
+        std::cout << tr("Для установки сервиса нужны права администратора. Сейчас появится UAC.\n",
+                         "Administrator rights are required to install the service. UAC will appear now.\n");
+        launchAndWaitElevated(self, args);
+        return;
+    }
+
+    fs::path zapretDir = ensureZapretDownloaded();
+    fs::path chosen = chooseZapretStrategy(zapretDir);
+    prepareVovaStrategy(zapretDir, chosen, minecraft);
+
+    fs::path installer = zapretDir / "vovavpn-install-service.cmd";
+    std::string script =
+        "@echo off\r\n"
+        "cd /d \"%~dp0\"\r\n"
+        "(echo 1&echo 1&echo.) | \"%~dp0service.bat\" admin\r\n";
+    writeFile(installer, script);
+
+    std::cout << tr("Устанавливаю zapret как сервис через стратегию VovaVPN...\n",
+                     "Installing zapret as a service using the VovaVPN strategy...\n");
+    int code = runProcess(L"cmd.exe /c " + quoteCmd(installer), false);
+    if (code != 0) {
+        throw std::runtime_error("Zapret service installer returned an error");
+    }
+
+    std::cout << tr("Zapret установлен как сервис.\n", "Zapret was installed as a service.\n");
+    waitKey();
+}
+
+void zapretWizard() {
+    clearScreen();
+    printHeader(tr("Zapret для Discord/YouTube", "Zapret for Discord/YouTube"));
+    std::cout << tr(
+        "Этот шаг ставит Flowseal zapret как Windows-сервис. Он может помочь Discord/YouTube.\n"
+        "Если всё уже работает без него, можно пропустить.\n\n",
+        "This step installs Flowseal zapret as a Windows service. It may help Discord/YouTube.\n"
+        "If everything already works without it, you can skip it.\n\n");
+
+    if (!confirm(tr("Установить zapret-сервис?", "Install zapret service?"), false)) return;
+    bool minecraft = confirm(tr("Добавить обход Minecraft порта 25565?", "Add Minecraft port 25565 bypass?"), false);
+    installZapretService(minecraft);
+}
+
+void fullSetupWizard() {
+    installHiddifyIfNeeded();
+    handleAmneziaConflict();
+    importBundledSettings();
+    zapretWizard();
+    copyVpnConfigAndLaunchHiddify();
+}
+
+void runInstallZapretFromArgs(bool minecraft) {
     SetConsoleOutputCP(CP_UTF8);
-    std::cout << "Hiddify Safe App Settings Import/Export\n";
-    std::cout << "Profiles and connection configs are intentionally excluded.\n\n";
+    SetConsoleCP(CP_UTF8);
+    enableVirtualTerminal();
+    try {
+        installZapretService(minecraft);
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: " << e.what() << "\n";
+        waitKey();
+    }
+}
 
+void chooseLanguage() {
+    int choice = selectMenu("Language / Язык", {"Русский", "English"}, 0);
+    gLang = (choice == 1) ? Lang::En : Lang::Ru;
+}
+
+void mainMenu() {
     while (true) {
-        std::cout << "1. Export settings\n";
-        std::cout << "2. Import settings\n";
-        std::cout << "0. Exit\n";
-        std::cout << "Select: ";
+        std::vector<std::string> items = {
+            tr("Полная настройка VovaVPN", "Full VovaVPN setup"),
+            tr("Проверить / установить Hiddify", "Check / install Hiddify"),
+            tr("Импортировать настройки Hiddify VovaVPN", "Import VovaVPN Hiddify settings"),
+            tr("Вставить VPN-конфиг и открыть Hiddify", "Paste VPN config and open Hiddify"),
+            tr("Проверить конфликт Amnezia", "Check Amnezia conflict"),
+            tr("Установить zapret для Discord/YouTube", "Install zapret for Discord/YouTube"),
+            tr("Экспорт безопасных настроек Hiddify", "Export safe Hiddify settings"),
+            tr("Импорт безопасных настроек из файла", "Import safe settings from file"),
+            tr("Выход", "Exit")
+        };
 
-        std::string choice;
-        std::getline(std::cin, choice);
+        int choice = selectMenu(tr("Главное меню", "Main menu"), items, 0);
+        if (choice < 0 || choice == 8) break;
 
         try {
-            if (choice == "1") exportSettings();
-            else if (choice == "2") importSettings();
-            else if (choice == "0") break;
-            else std::cout << "Unknown option.\n";
+            clearScreen();
+            switch (choice) {
+                case 0: fullSetupWizard(); break;
+                case 1: installHiddifyIfNeeded(); break;
+                case 2: importBundledSettings(); break;
+                case 3: copyVpnConfigAndLaunchHiddify(); break;
+                case 4: handleAmneziaConflict(); waitKey(); break;
+                case 5: zapretWizard(); break;
+                case 6: exportSettings(); waitKey(); break;
+                case 7: importSettingsFromFile(); waitKey(); break;
+                default: break;
+            }
         } catch (const std::exception& e) {
-            std::cerr << "ERROR: " << e.what() << "\n";
+            std::cerr << "\nERROR: " << e.what() << "\n";
+            waitKey();
         }
-        std::cout << "\n";
     }
+}
+
+int main(int argc, char** argv) {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    enableVirtualTerminal();
+    std::ios::sync_with_stdio(false);
+
+    bool installZapretArg = false;
+    bool minecraftArg = false;
+    bool printHelp = false;
+    bool printVersion = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--install-zapret") installZapretArg = true;
+        if (arg == "--minecraft") minecraftArg = true;
+        if (arg == "--en") gLang = Lang::En;
+        if (arg == "--help" || arg == "-h" || arg == "/?") printHelp = true;
+        if (arg == "--version" || arg == "-v") printVersion = true;
+    }
+
+    if (printVersion) {
+        std::cout << "VovaVPN Hiddify Setup Tool " << kVersion << "\n";
+        return 0;
+    }
+
+    if (printHelp) {
+        std::cout << "VovaVPN Hiddify Setup Tool " << kVersion << "\n"
+                  << "Usage:\n"
+                  << "  hiddify_settings_tool.exe\n"
+                  << "  hiddify_settings_tool.exe --version\n"
+                  << "  hiddify_settings_tool.exe --install-zapret [--minecraft]\n";
+        return 0;
+    }
+
+    if (installZapretArg) {
+        runInstallZapretFromArgs(minecraftArg);
+        return 0;
+    }
+
+    chooseLanguage();
+    mainMenu();
     return 0;
 }
