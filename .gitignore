@@ -1,0 +1,17 @@
+# Build artifacts
+*.o
+*.obj
+*.pdb
+
+# Local exports/imports
+*.zip
+*.bak*
+
+# Editor/system files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+
+# Keep packaged release binary if intentionally included
+!dist/hiddify_settings_tool.exe
