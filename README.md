@@ -2,7 +2,7 @@
 
 Windows 10/11 setup helper for VovaVPN users.
 
-The tool helps a user install Hiddify, import safe Hiddify app settings, copy a VPN config into the clipboard, handle common Amnezia conflicts, and optionally install Flowseal zapret for Discord/YouTube.
+The tool helps a user install Hiddify, import safe Hiddify app settings, handle common Amnezia conflicts, and optionally install VovaVPN zapret for Discord/YouTube.
 
 ## Download
 
@@ -19,8 +19,6 @@ Run it, choose the language, then use the arrow keys and Enter.
 - Checks whether Hiddify is installed.
 - Downloads and starts the official Hiddify Windows installer if Hiddify is missing.
 - Downloads and imports the VovaVPN safe Hiddify settings archive.
-- Lets the user paste a VPN subscription/config link.
-- Copies that link to the clipboard and opens Hiddify.
 - Detects running Amnezia / AmneziaWG processes that can conflict with Hiddify.
 - Offers to close those processes after explicit confirmation.
 - Downloads the VovaVPN zapret bundle when it is not already installed.
@@ -42,14 +40,13 @@ Zapret service installation requires administrator rights because it installs a 
 
 ## Hiddify Config Flow
 
-The tool does not secretly edit private Hiddify VPN profile files.
+The setup tool does not copy or import a VPN key.
 
-Instead it:
+The Mini App owns the key flow:
 
-1. asks the user for a VPN config/subscription link;
-2. copies the link to the Windows clipboard;
-3. opens Hiddify;
-4. asks the user to select `Add Config` -> `Import from Clipboard`.
+1. user presses `Copy key` in the Mini App;
+2. Mini App copies the VLESS key to the clipboard;
+3. user opens Hiddify and selects `Add Config` -> `Import from Clipboard`.
 
 This is safer and easier to recover from.
 

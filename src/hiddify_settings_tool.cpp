@@ -21,13 +21,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.1.0";
+static const char* kVersion = "2.2.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.1.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.2.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.1.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.2.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -598,108 +598,6 @@ void importBundledSettings() {
     waitKey();
 }
 
-bool setClipboardText(const std::string& utf8) {
-    std::wstring text = widen(utf8);
-    if (!OpenClipboard(nullptr)) return false;
-    EmptyClipboard();
-
-    size_t bytes = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (!hMem) {
-        CloseClipboard();
-        return false;
-    }
-    void* ptr = GlobalLock(hMem);
-    memcpy(ptr, text.c_str(), bytes);
-    GlobalUnlock(hMem);
-    SetClipboardData(CF_UNICODETEXT, hMem);
-    CloseClipboard();
-    return true;
-}
-
-std::string getClipboardText() {
-    std::string out;
-    if (!OpenClipboard(nullptr)) return out;
-    HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-    if (hData) {
-        wchar_t* text = (wchar_t*)GlobalLock(hData);
-        if (text) {
-            out = narrow(text);
-            GlobalUnlock(hData);
-        }
-    }
-    CloseClipboard();
-    return out;
-}
-
-bool looksLikeVpnConfig(const std::string& value) {
-    std::string low = lowerCopy(value);
-    return low.rfind("vless://", 0) == 0 ||
-           low.rfind("vmess://", 0) == 0 ||
-           low.rfind("trojan://", 0) == 0 ||
-           low.rfind("ss://", 0) == 0 ||
-           low.rfind("http://", 0) == 0 ||
-           low.rfind("https://", 0) == 0;
-}
-
-void launchHiddify() {
-    auto exe = findHiddifyExe();
-    if (exe) {
-        ShellExecuteW(nullptr, L"open", exe->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-    } else {
-        ShellExecuteW(nullptr, L"open", L"hiddify://", nullptr, nullptr, SW_SHOWNORMAL);
-    }
-}
-
-void copyVpnConfigAndLaunchHiddify() {
-    clearScreen();
-    printHeader(tr("VPN-конфиг", "VPN config"));
-
-    std::string clip = getClipboardText();
-    std::vector<std::string> items;
-    if (looksLikeVpnConfig(clip)) {
-        items.push_back(tr("Использовать ссылку из буфера обмена", "Use config link from clipboard"));
-    }
-    items.push_back(tr("Вставить ссылку вручную", "Paste config link manually"));
-    items.push_back(tr("Пропустить", "Skip"));
-
-    int choice = selectMenu(tr("Добавление VPN-конфига", "Adding VPN config"), items, 0);
-    if (choice < 0 || items[choice] == tr("Пропустить", "Skip")) return;
-
-    std::string config = clip;
-    if (items[choice] == tr("Вставить ссылку вручную", "Paste config link manually")) {
-        clearScreen();
-        printHeader(tr("Вставьте VPN-ссылку", "Paste VPN link"));
-        std::cout << tr("Вставьте VLESS/VMess/Trojan/подписку и нажмите Enter:\n",
-                         "Paste a VLESS/VMess/Trojan/subscription link and press Enter:\n");
-        std::cout.flush();
-        std::getline(std::cin, config);
-    }
-
-    if (!looksLikeVpnConfig(config)) {
-        std::cout << tr("Это не похоже на VPN-ссылку. Я не буду импортировать мусор.\n",
-                         "This does not look like a VPN link. It will not be imported.\n");
-        waitKey();
-        return;
-    }
-
-    if (!setClipboardText(config)) {
-        throw std::runtime_error("Failed to write VPN config to clipboard");
-    }
-
-    launchHiddify();
-    clearScreen();
-    printHeader(tr("Конфиг скопирован", "Config copied"));
-    std::cout << tr(
-        "VPN-ссылка уже в буфере обмена.\n\n"
-        "В Hiddify нажмите плюс / Add Config и выберите Import from Clipboard.\n"
-        "Это безопаснее, чем тайно править приватные файлы профиля.\n",
-        "The VPN link is in the clipboard.\n\n"
-        "In Hiddify, click plus / Add Config and choose Import from Clipboard.\n"
-        "This is safer than silently editing private profile files.\n");
-    waitKey();
-}
-
 struct ProcessInfo {
     DWORD pid;
     std::wstring name;
@@ -967,7 +865,6 @@ void fullSetupWizard() {
     handleAmneziaConflict();
     importBundledSettings();
     zapretWizard();
-    copyVpnConfigAndLaunchHiddify();
 }
 
 void runInstallZapretFromArgs(bool minecraft) {
@@ -993,7 +890,6 @@ void mainMenu() {
             tr("Полная настройка VovaVPN", "Full VovaVPN setup"),
             tr("Проверить / установить Hiddify", "Check / install Hiddify"),
             tr("Импортировать настройки Hiddify VovaVPN", "Import VovaVPN Hiddify settings"),
-            tr("Вставить VPN-конфиг и открыть Hiddify", "Paste VPN config and open Hiddify"),
             tr("Проверить конфликт Amnezia", "Check Amnezia conflict"),
             tr("Установить zapret для Discord/YouTube", "Install zapret for Discord/YouTube"),
             tr("Экспорт безопасных настроек Hiddify", "Export safe Hiddify settings"),
@@ -1002,7 +898,7 @@ void mainMenu() {
         };
 
         int choice = selectMenu(tr("Главное меню", "Main menu"), items, 0);
-        if (choice < 0 || choice == 8) break;
+        if (choice < 0 || choice == 7) break;
 
         try {
             clearScreen();
@@ -1010,11 +906,10 @@ void mainMenu() {
                 case 0: fullSetupWizard(); break;
                 case 1: installHiddifyIfNeeded(); break;
                 case 2: importBundledSettings(); break;
-                case 3: copyVpnConfigAndLaunchHiddify(); break;
-                case 4: handleAmneziaConflict(); waitKey(); break;
-                case 5: zapretWizard(); break;
-                case 6: exportSettings(); waitKey(); break;
-                case 7: importSettingsFromFile(); waitKey(); break;
+                case 3: handleAmneziaConflict(); waitKey(); break;
+                case 4: zapretWizard(); break;
+                case 5: exportSettings(); waitKey(); break;
+                case 6: importSettingsFromFile(); waitKey(); break;
                 default: break;
             }
         } catch (const std::exception& e) {

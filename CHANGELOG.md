@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.0 - Mini App Owns Key Copy
+
+- Removed VPN config copy/import from the default setup wizard.
+- Removed the VPN config copy option from the main menu.
+- Updated release URLs to `v2.2.0`.
+- The Mini App is now responsible for copying the VLESS key.
+
 ## 2.1.0 - Bundled VovaVPN Zapret
 
 - Added VovaVPN zapret bundle download support.
