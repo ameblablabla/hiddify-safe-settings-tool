@@ -21,11 +21,11 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.0.0";
+static const char* kVersion = "2.0.1";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.0.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.0.1/hiddify-app-settings.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -219,6 +219,7 @@ void printHeader(const std::string& subtitle = "") {
 
 void waitKey() {
     std::cout << "\n" << tr("Нажмите любую клавишу...", "Press any key...") << "\n";
+    std::cout.flush();
     _getch();
 }
 
@@ -242,6 +243,7 @@ int selectMenu(const std::string& title, const std::vector<std::string>& items, 
             }
         }
 
+        std::cout.flush();
         int ch = _getch();
         if (ch == 27) return -1;
         if (ch == 13) return selected;
@@ -668,6 +670,7 @@ void copyVpnConfigAndLaunchHiddify() {
         printHeader(tr("Вставьте VPN-ссылку", "Paste VPN link"));
         std::cout << tr("Вставьте VLESS/VMess/Trojan/подписку и нажмите Enter:\n",
                          "Paste a VLESS/VMess/Trojan/subscription link and press Enter:\n");
+        std::cout.flush();
         std::getline(std::cin, config);
     }
 
@@ -1020,6 +1023,7 @@ int main(int argc, char** argv) {
     SetConsoleCP(CP_UTF8);
     enableVirtualTerminal();
     std::ios::sync_with_stdio(false);
+    std::cout.setf(std::ios::unitbuf);
 
     bool installZapretArg = false;
     bool minecraftArg = false;

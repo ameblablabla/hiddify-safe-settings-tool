@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1 - Console Render Hotfix
+
+- Fixed a console rendering issue where the first menu could appear as a blank black window.
+- Added explicit output flushing before keyboard/input waits.
+- Updated bundled settings download URL for the `v2.0.1` release.
+
 ## 2.0.0 - VovaVPN Setup Wizard
 
 - Added Russian/English interactive menu with arrow-key navigation.
