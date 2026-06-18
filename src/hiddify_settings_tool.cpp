@@ -22,13 +22,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.6.0";
+static const char* kVersion = "2.7.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.6.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.7.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.6.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.7.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -92,6 +92,41 @@ void replaceAll(std::string& s, const std::string& from, const std::string& to) 
         s.replace(pos, from.size(), to);
         pos += to.size();
     }
+}
+
+std::string collapseSpaces(std::string s) {
+    while (s.find("  ") != std::string::npos) {
+        replaceAll(s, "  ", " ");
+    }
+    return trimCopy(s);
+}
+
+std::string removeEmptyGameFilterSections(const std::string& input) {
+    const std::string delimiter = " --new ";
+    std::vector<std::string> kept;
+    size_t start = 0;
+
+    while (start <= input.size()) {
+        size_t pos = input.find(delimiter, start);
+        std::string segment = pos == std::string::npos
+            ? input.substr(start)
+            : input.substr(start, pos - start);
+
+        bool drop = segment.find("--filter-tcp=%GameFilterTCP%") != std::string::npos ||
+            segment.find("--filter-udp=%GameFilterUDP%") != std::string::npos;
+        if (!drop) kept.push_back(trimCopy(segment));
+
+        if (pos == std::string::npos) break;
+        start = pos + delimiter.size();
+    }
+
+    std::ostringstream out;
+    for (size_t i = 0; i < kept.size(); ++i) {
+        if (kept[i].empty()) continue;
+        if (out.tellp() > 0) out << delimiter;
+        out << kept[i];
+    }
+    return trimCopy(out.str());
 }
 
 bool containsAny(const std::string& text, const std::vector<std::string>& needles) {
@@ -997,6 +1032,7 @@ std::string extractWinwsArgsFromStrategy(const fs::path& strategy, const fs::pat
         throw std::runtime_error("Could not parse zapret strategy arguments");
     }
 
+    result = removeEmptyGameFilterSections(result);
     std::string bin = narrow((zapretDir / "bin").wstring()) + "\\";
     std::string lists = narrow((zapretDir / "lists").wstring()) + "\\";
     replaceAll(result, "%BIN%", bin);
@@ -1006,8 +1042,13 @@ std::string extractWinwsArgsFromStrategy(const fs::path& strategy, const fs::pat
     replaceAll(result, "%GameFilterTCP%", "");
     replaceAll(result, "%GameFilterUDP%", "");
     replaceAll(result, "%GameFilter%", "");
-    replaceAll(result, "  ", " ");
-    return trimCopy(result);
+    result = collapseSpaces(result);
+
+    if (std::regex_search(result, std::regex(R"(--filter-(tcp|udp)=(\s|$))"))) {
+        throw std::runtime_error("Zapret strategy generated an empty TCP/UDP filter");
+    }
+
+    return result;
 }
 
 void installZapretServiceDirect(const fs::path& zapretDir, const fs::path& strategy) {

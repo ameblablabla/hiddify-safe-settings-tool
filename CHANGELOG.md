@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.7.0 - Zapret Empty Filter Hotfix
+
+- Fixed zapret service startup failure when `GameFilterTCP` / `GameFilterUDP` were empty.
+- The setup tool now removes empty game-filter sections before creating the Windows service, preventing `winws.exe` from exiting with service error `1067`.
+- Added validation so a broken strategy is caught before service creation.
+- Updated bundled settings and zapret release URLs to `v2.7.0`.
+
 ## 2.6.0 - Silent Zapret Service Install
 
 - Removed the interactive `service.bat` manager from the VovaVPN install flow.
