@@ -22,13 +22,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.5.0";
+static const char* kVersion = "2.6.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.5.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.6.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.5.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.6.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -75,6 +75,23 @@ std::string narrow(const std::wstring& s) {
 std::string lowerCopy(std::string s) {
     std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     return s;
+}
+
+std::string trimCopy(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace((unsigned char)s[start])) ++start;
+    size_t end = s.size();
+    while (end > start && std::isspace((unsigned char)s[end - 1])) --end;
+    return s.substr(start, end - start);
+}
+
+void replaceAll(std::string& s, const std::string& from, const std::string& to) {
+    if (from.empty()) return;
+    size_t pos = 0;
+    while ((pos = s.find(from, pos)) != std::string::npos) {
+        s.replace(pos, from.size(), to);
+        pos += to.size();
+    }
 }
 
 bool containsAny(const std::string& text, const std::vector<std::string>& needles) {
@@ -944,6 +961,99 @@ fs::path prepareVovaStrategy(const fs::path& zapretDir, const fs::path& sourceSt
     return target;
 }
 
+std::string extractWinwsArgsFromStrategy(const fs::path& strategy, const fs::path& zapretDir) {
+    std::string content = readFile(strategy);
+    std::istringstream in(content);
+    std::ostringstream args;
+    std::string line;
+    bool capture = false;
+
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+
+        if (!capture) {
+            size_t winws = line.find("winws.exe");
+            if (winws == std::string::npos) continue;
+            size_t after = winws + std::string("winws.exe").size();
+            if (after < line.size() && line[after] == '"') ++after;
+            line = line.substr(after);
+            capture = true;
+        }
+
+        std::string part = trimCopy(line);
+        bool continues = false;
+        if (!part.empty() && part.back() == '^') {
+            continues = true;
+            part.pop_back();
+            part = trimCopy(part);
+        }
+
+        if (!part.empty()) args << part << " ";
+        if (capture && !continues) break;
+    }
+
+    std::string result = trimCopy(args.str());
+    if (result.empty() || result.find("--wf-") == std::string::npos) {
+        throw std::runtime_error("Could not parse zapret strategy arguments");
+    }
+
+    std::string bin = narrow((zapretDir / "bin").wstring()) + "\\";
+    std::string lists = narrow((zapretDir / "lists").wstring()) + "\\";
+    replaceAll(result, "%BIN%", bin);
+    replaceAll(result, "%LISTS%", lists);
+    replaceAll(result, ",%GameFilterTCP%", "");
+    replaceAll(result, ",%GameFilterUDP%", "");
+    replaceAll(result, "%GameFilterTCP%", "");
+    replaceAll(result, "%GameFilterUDP%", "");
+    replaceAll(result, "%GameFilter%", "");
+    replaceAll(result, "  ", " ");
+    return trimCopy(result);
+}
+
+void installZapretServiceDirect(const fs::path& zapretDir, const fs::path& strategy) {
+    fs::path winws = zapretDir / "bin" / "winws.exe";
+    if (!fs::exists(winws)) {
+        throw std::runtime_error("winws.exe was not found in zapret bundle");
+    }
+
+    std::string args = extractWinwsArgsFromStrategy(strategy, zapretDir);
+    std::wstring binPath = L"\"" + winws.wstring() + L"\" " + widen(args);
+    fs::path logPath = zapretDir / "vovavpn-install-service.log";
+
+    std::wstring ps =
+        L"$ErrorActionPreference='Stop'; "
+        L"$log=" + quotePs(logPath) + L"; "
+        L"'VovaVPN zapret service install' | Set-Content -LiteralPath $log -Encoding UTF8; "
+        L"Set-Location -LiteralPath " + quotePs(zapretDir) + L"; "
+        L"Stop-Process -Name winws -Force -ErrorAction SilentlyContinue; "
+        L"sc.exe stop zapret 2>&1 | Add-Content -LiteralPath $log; "
+        L"sc.exe delete zapret 2>&1 | Add-Content -LiteralPath $log; "
+        L"sc.exe stop WinDivert 2>&1 | Add-Content -LiteralPath $log; "
+        L"sc.exe delete WinDivert 2>&1 | Add-Content -LiteralPath $log; "
+        L"sc.exe stop WinDivert14 2>&1 | Add-Content -LiteralPath $log; "
+        L"sc.exe delete WinDivert14 2>&1 | Add-Content -LiteralPath $log; "
+        L"netsh interface tcp set global timestamps=enabled 2>&1 | Add-Content -LiteralPath $log; "
+        L"$binPath=" + quotePsString(binPath) + L"; "
+        L"'BINPATH:' | Add-Content -LiteralPath $log; "
+        L"$binPath | Add-Content -LiteralPath $log; "
+        L"$createOut = sc.exe create zapret binPath= $binPath DisplayName= 'zapret' start= auto 2>&1; "
+        L"$createOut | Add-Content -LiteralPath $log; "
+        L"if ($LASTEXITCODE -ne 0) { throw ($createOut -join \"`n\") }; "
+        L"sc.exe description zapret 'Zapret DPI bypass software' 2>&1 | Add-Content -LiteralPath $log; "
+        L"reg.exe add 'HKLM\\System\\CurrentControlSet\\Services\\zapret' /v zapret-discord-youtube /t REG_SZ /d '000-vovavpn' /f 2>&1 | Add-Content -LiteralPath $log; "
+        L"$startOut = sc.exe start zapret 2>&1; "
+        L"$startOut | Add-Content -LiteralPath $log; "
+        L"Start-Sleep -Seconds 2; "
+        L"$query = sc.exe query zapret; "
+        L"$query | Add-Content -LiteralPath $log; "
+        L"if (($query -join \"`n\") -notmatch 'RUNNING') { throw (($startOut + $query) -join \"`n\") }; ";
+
+    int code = runPowerShell(ps, true);
+    if (code != 0) {
+        throw std::runtime_error("Failed to install or start zapret service");
+    }
+}
+
 void installZapretService(bool minecraft) {
     if (!isAdmin()) {
         fs::path self;
@@ -960,21 +1070,11 @@ void installZapretService(bool minecraft) {
 
     fs::path zapretDir = ensureZapretDownloaded();
     fs::path chosen = chooseZapretStrategy(zapretDir);
-    prepareVovaStrategy(zapretDir, chosen, minecraft);
-
-    fs::path installer = zapretDir / "vovavpn-install-service.cmd";
-    std::string script =
-        "@echo off\r\n"
-        "cd /d \"%~dp0\"\r\n"
-        "(echo 1&echo 1&echo.) | \"%~dp0service.bat\" admin\r\n";
-    writeFile(installer, script);
+    fs::path strategy = prepareVovaStrategy(zapretDir, chosen, minecraft);
 
     out(tr("Устанавливаю zapret как сервис через стратегию VovaVPN...\n",
            "Installing zapret as a service using the VovaVPN strategy...\n"));
-    int code = runProcess(L"cmd.exe /c " + quoteCmd(installer), false);
-    if (code != 0) {
-        throw std::runtime_error("Zapret service installer returned an error");
-    }
+    installZapretServiceDirect(zapretDir, strategy);
 
     out(tr("Zapret установлен как сервис.\n", "Zapret was installed as a service.\n"));
     waitKey();

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.6.0 - Silent Zapret Service Install
+
+- Removed the interactive `service.bat` manager from the VovaVPN install flow.
+- The setup tool now parses `000-vovavpn.bat` and creates the `zapret` Windows service directly with `sc.exe`.
+- Added `vovavpn-install-service.log` in the zapret folder for service install diagnostics.
+- Updated bundled settings and zapret release URLs to `v2.6.0`.
+
 ## 2.5.0 - Zapret Unpack and Unicode Console Hotfix
 
 - Fixed zapret unpacking: the archive copy step now expands wildcard paths correctly and validates that `service.bat` and `000-vovavpn.bat` reached `C:\zapret\vovavpn-zapret`.
