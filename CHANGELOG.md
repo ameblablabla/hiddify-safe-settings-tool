@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.0 - Zapret Unpack and Unicode Console Hotfix
+
+- Fixed zapret unpacking: the archive copy step now expands wildcard paths correctly and validates that `service.bat` and `000-vovavpn.bat` reached `C:\zapret\vovavpn-zapret`.
+- Replaced normal console text output with Windows Unicode console output so Russian text does not turn into `????` on older Windows console settings.
+- Updated bundled settings and zapret release URLs to `v2.5.0`.
+
 ## 2.4.0 - Windows Downloader and Encoding Hotfix
 
 - Fixed Russian console text turning into question marks on some Windows systems by forcing UTF-8 input/output during build.

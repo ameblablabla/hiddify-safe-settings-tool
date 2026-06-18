@@ -22,13 +22,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.4.0";
+static const char* kVersion = "2.5.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.4.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.5.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.4.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.5.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -213,31 +213,53 @@ void enableVirtualTerminal() {
     }
 }
 
+void writeUtf8(HANDLE handle, const std::string& text) {
+    if (text.empty()) return;
+
+    DWORD mode = 0;
+    if (handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode)) {
+        std::wstring wide = widen(text);
+        DWORD written = 0;
+        WriteConsoleW(handle, wide.c_str(), (DWORD)wide.size(), &written, nullptr);
+        return;
+    }
+
+    DWORD written = 0;
+    WriteFile(handle, text.data(), (DWORD)text.size(), &written, nullptr);
+}
+
+void out(const std::string& text) {
+    writeUtf8(GetStdHandle(STD_OUTPUT_HANDLE), text);
+}
+
+void errOut(const std::string& text) {
+    writeUtf8(GetStdHandle(STD_ERROR_HANDLE), text);
+}
+
 void clearScreen() {
-    std::cout << "\x1b[2J\x1b[H";
+    out("\x1b[2J\x1b[H");
 }
 
 void color(const char* ansi) {
-    std::cout << ansi;
+    out(ansi);
 }
 
 void resetColor() {
-    std::cout << "\x1b[0m";
+    out("\x1b[0m");
 }
 
 void printHeader(const std::string& subtitle = "") {
     color("\x1b[38;2;228;188;58m");
-    std::cout << "VovaVPN Hiddify Setup Tool v" << kVersion << "\n";
+    out(std::string("VovaVPN Hiddify Setup Tool v") + kVersion + "\n");
     resetColor();
-    std::cout << "------------------------------------------------------------\n";
+    out("------------------------------------------------------------\n");
     if (!subtitle.empty()) {
-        std::cout << subtitle << "\n\n";
+        out(subtitle + "\n\n");
     }
 }
 
 void waitKey() {
-    std::cout << "\n" << tr("Нажмите любую клавишу...", "Press any key...") << "\n";
-    std::cout.flush();
+    out("\n" + tr("Нажмите любую клавишу...", "Press any key...") + "\n");
     _getch();
 }
 
@@ -248,20 +270,19 @@ int selectMenu(const std::string& title, const std::vector<std::string>& items, 
     while (true) {
         clearScreen();
         printHeader(title);
-        std::cout << tr("Используйте стрелки вверх/вниз и Enter. Esc - назад.\n\n",
-                         "Use Up/Down arrows and Enter. Esc - back.\n\n");
+        out(tr("Используйте стрелки вверх/вниз и Enter. Esc - назад.\n\n",
+               "Use Up/Down arrows and Enter. Esc - back.\n\n"));
         for (int i = 0; i < (int)items.size(); ++i) {
             if (i == selected) {
                 color("\x1b[30;48;2;228;188;58m");
-                std::cout << "  > " << items[i] << "  ";
+                out("  > " + items[i] + "  ");
                 resetColor();
-                std::cout << "\n";
+                out("\n");
             } else {
-                std::cout << "    " << items[i] << "\n";
+                out("    " + items[i] + "\n");
             }
         }
 
-        std::cout.flush();
         int ch = _getch();
         if (ch == 27) return -1;
         if (ch == 13) return selected;
@@ -458,46 +479,46 @@ void installHiddifyIfNeeded() {
 
     auto existing = findHiddifyExe();
     if (existing) {
-        std::cout << tr("Hiddify найден:\n", "Hiddify found:\n") << existing->string() << "\n";
+        out(tr("Hiddify найден:\n", "Hiddify found:\n") + narrow(existing->wstring()) + "\n");
         waitKey();
         return;
     }
 
-    std::cout << tr("Hiddify не найден. Можно скачать официальный установщик и запустить его сейчас.\n",
-                     "Hiddify was not found. The official installer can be downloaded and started now.\n");
+    out(tr("Hiddify не найден. Можно скачать официальный установщик и запустить его сейчас.\n",
+           "Hiddify was not found. The official installer can be downloaded and started now.\n"));
     if (!confirm(tr("Скачать и запустить установщик Hiddify?", "Download and run the Hiddify installer?"), true)) {
         return;
     }
 
     fs::path temp = makeTempDir("hiddify-installer");
     fs::path installer = temp / "Hiddify-Windows-Setup-x64.exe";
-    std::cout << tr("Скачиваю установщик...\n", "Downloading installer...\n");
+    out(tr("Скачиваю установщик...\n", "Downloading installer...\n"));
     try {
         downloadFile(kHiddifyInstallerUrl, installer);
     } catch (const std::exception& e) {
-        std::cout << "\n" << tr(
+        out("\n" + tr(
             "Автоскачивание заблокировано Windows или сетью. Открою официальный файл в браузере.\n"
             "Дождитесь скачивания, затем вернитесь сюда и нажмите любую клавишу. Я попробую найти файл в Downloads и запустить его.\n\n",
             "Automatic download was blocked by Windows or the network. I will open the official file in the browser.\n"
-            "Wait for the download, then return here and press any key. I will try to find it in Downloads and start it.\n\n");
-        std::cout << "DETAILS: " << e.what() << "\n";
+            "Wait for the download, then return here and press any key. I will try to find it in Downloads and start it.\n\n"));
+        out(std::string("DETAILS: ") + e.what() + "\n");
         openUrlInBrowser(kHiddifyInstallerUrl);
         waitKey();
 
         auto downloaded = findDownloadedHiddifyInstaller();
         if (!downloaded) {
             fs::remove_all(temp);
-            std::cout << tr(
+            out(tr(
                 "Не нашёл установщик Hiddify в Downloads. Скачайте его в браузере и запустите вручную, потом снова откройте мастер VovaVPN.\n",
-                "I did not find the Hiddify installer in Downloads. Download and run it manually, then open VovaVPN setup again.\n");
+                "I did not find the Hiddify installer in Downloads. Download and run it manually, then open VovaVPN setup again.\n"));
             waitKey();
             return;
         }
         installer = *downloaded;
     }
 
-    std::cout << tr("Запускаю установщик. Пройдите установку и вернитесь в это окно.\n",
-                     "Starting the installer. Finish setup, then return to this window.\n");
+    out(tr("Запускаю установщик. Пройдите установку и вернитесь в это окно.\n",
+           "Starting the installer. Finish setup, then return to this window.\n"));
     SHELLEXECUTEINFOW sei{};
     sei.cbSize = sizeof(sei);
     sei.fMask = SEE_MASK_NOCLOSEPROCESS;
@@ -514,10 +535,10 @@ void installHiddifyIfNeeded() {
     fs::remove_all(temp);
 
     if (findHiddifyExe()) {
-        std::cout << tr("Hiddify установлен.\n", "Hiddify is installed.\n");
+        out(tr("Hiddify установлен.\n", "Hiddify is installed.\n"));
     } else {
-        std::cout << tr("Я не смог автоматически найти Hiddify после установки. Если он открылся, это нормально.\n",
-                         "Hiddify was not found automatically after setup. If it opened, that is okay.\n");
+        out(tr("Я не смог автоматически найти Hiddify после установки. Если он открылся, это нормально.\n",
+               "Hiddify was not found automatically after setup. If it opened, that is okay.\n"));
     }
     waitKey();
 }
@@ -675,7 +696,7 @@ void exportSettings() {
         if (code != 0 || !fs::exists(destination)) {
             throw std::runtime_error("Compress-Archive failed");
         }
-        std::cout << tr("Экспортировано:\n", "Exported:\n") << destination.string() << "\n";
+        out(tr("Экспортировано:\n", "Exported:\n") + narrow(destination.wstring()) + "\n");
     } catch (...) {
         fs::remove_all(temp);
         throw;
@@ -687,8 +708,8 @@ void importSettingsFromFile() {
     fs::path archive = openZipDialog();
     if (archive.empty()) return;
     importSettingsArchive(archive);
-    std::cout << tr("Безопасные настройки Hiddify импортированы.\n",
-                     "Safe Hiddify settings were imported.\n");
+    out(tr("Безопасные настройки Hiddify импортированы.\n",
+           "Safe Hiddify settings were imported.\n"));
 }
 
 void importBundledSettings() {
@@ -697,11 +718,11 @@ void importBundledSettings() {
     fs::path temp = makeTempDir("vovavpn-settings");
     fs::path archive = temp / "hiddify-app-settings.zip";
     try {
-        std::cout << tr("Скачиваю настройки VovaVPN...\n", "Downloading VovaVPN settings...\n");
+        out(tr("Скачиваю настройки VovaVPN...\n", "Downloading VovaVPN settings...\n"));
         downloadFile(kSafeSettingsUrl, archive);
         importSettingsArchive(archive);
-        std::cout << tr("Настройки импортированы. Если Hiddify открыт, перезапустите его.\n",
-                         "Settings were imported. Restart Hiddify if it is open.\n");
+        out(tr("Настройки импортированы. Если Hiddify открыт, перезапустите его.\n",
+               "Settings were imported. Restart Hiddify if it is open.\n"));
     } catch (...) {
         fs::remove_all(temp);
         throw;
@@ -746,21 +767,21 @@ void terminateProcess(DWORD pid) {
 void handleAmneziaConflict() {
     auto processes = findAmneziaProcesses();
     if (processes.empty()) {
-        std::cout << tr("Процессы Amnezia/AmneziaWG не найдены.\n",
-                         "No Amnezia/AmneziaWG processes were found.\n");
+        out(tr("Процессы Amnezia/AmneziaWG не найдены.\n",
+               "No Amnezia/AmneziaWG processes were found.\n"));
         return;
     }
 
     clearScreen();
     printHeader(tr("Конфликт Amnezia", "Amnezia conflict"));
-    std::cout << tr(
+    out(tr(
         "На компьютере найдены процессы Amnezia/AmneziaWG. Они часто конфликтуют с Hiddify.\n"
         "Программа может закрыть запущенные процессы. Удалять Amnezia автоматически я не буду.\n\n",
         "Amnezia/AmneziaWG processes were found. They often conflict with Hiddify.\n"
-        "This tool can close running processes. It will not uninstall Amnezia automatically.\n\n");
+        "This tool can close running processes. It will not uninstall Amnezia automatically.\n\n"));
 
     for (const auto& p : processes) {
-        std::cout << "  " << narrow(p.name) << " (PID " << p.pid << ")\n";
+        out("  " + narrow(p.name) + " (PID " + std::to_string(p.pid) + ")\n");
     }
 
     std::vector<std::string> actions = {
@@ -771,7 +792,7 @@ void handleAmneziaConflict() {
     int choice = selectMenu(tr("Что сделать с Amnezia?", "What should be done with Amnezia?"), actions, 0);
     if (choice == 0) {
         for (const auto& p : processes) terminateProcess(p.pid);
-        std::cout << tr("Процессы закрыты.\n", "Processes closed.\n");
+        out(tr("Процессы закрыты.\n", "Processes closed.\n"));
         waitKey();
     } else if (choice == 1) {
         ShellExecuteW(nullptr, L"open", L"ms-settings:appsfeatures", nullptr, nullptr, SW_SHOWNORMAL);
@@ -814,7 +835,7 @@ fs::path ensureZapretDownloaded() {
     fs::path archive = temp / "vovavpn-zapret.zip";
     fs::path extract = temp / "extract";
 
-    std::cout << tr("Скачиваю VovaVPN zapret...\n", "Downloading VovaVPN zapret...\n");
+    out(tr("Скачиваю VovaVPN zapret...\n", "Downloading VovaVPN zapret...\n"));
     downloadFile(kZapretBundleUrl, archive);
 
     std::wstring ps =
@@ -826,12 +847,14 @@ fs::path ensureZapretDownloaded() {
         L"if (-not $service) { throw 'service.bat was not found in archive' }; "
         L"$src=Split-Path -Parent $service.FullName; "
         L"New-Item -ItemType Directory -Path $target -Force | Out-Null; "
-        L"Copy-Item -LiteralPath (Join-Path $src '*') -Destination $target -Recurse -Force; ";
+        L"Copy-Item -Path (Join-Path $src '*') -Destination $target -Recurse -Force; "
+        L"if (!(Test-Path (Join-Path $target 'service.bat'))) { throw 'service.bat was not copied' }; "
+        L"if (!(Test-Path (Join-Path $target '000-vovavpn.bat'))) { throw '000-vovavpn.bat was not copied' }; ";
 
     int code = runPowerShell(ps, false);
     fs::remove_all(temp);
     if (code != 0 || !validVovaZapretDir(target)) {
-        throw std::runtime_error("Failed to download or unpack VovaVPN zapret");
+        throw std::runtime_error("Failed to unpack VovaVPN zapret into " + narrow(target.wstring()));
     }
     return target;
 }
@@ -929,8 +952,8 @@ void installZapretService(bool minecraft) {
         self = buf;
         std::wstring args = L"--install-zapret";
         if (minecraft) args += L" --minecraft";
-        std::cout << tr("Для установки сервиса нужны права администратора. Сейчас появится UAC.\n",
-                         "Administrator rights are required to install the service. UAC will appear now.\n");
+        out(tr("Для установки сервиса нужны права администратора. Сейчас появится UAC.\n",
+               "Administrator rights are required to install the service. UAC will appear now.\n"));
         launchAndWaitElevated(self, args);
         return;
     }
@@ -946,25 +969,25 @@ void installZapretService(bool minecraft) {
         "(echo 1&echo 1&echo.) | \"%~dp0service.bat\" admin\r\n";
     writeFile(installer, script);
 
-    std::cout << tr("Устанавливаю zapret как сервис через стратегию VovaVPN...\n",
-                     "Installing zapret as a service using the VovaVPN strategy...\n");
+    out(tr("Устанавливаю zapret как сервис через стратегию VovaVPN...\n",
+           "Installing zapret as a service using the VovaVPN strategy...\n"));
     int code = runProcess(L"cmd.exe /c " + quoteCmd(installer), false);
     if (code != 0) {
         throw std::runtime_error("Zapret service installer returned an error");
     }
 
-    std::cout << tr("Zapret установлен как сервис.\n", "Zapret was installed as a service.\n");
+    out(tr("Zapret установлен как сервис.\n", "Zapret was installed as a service.\n"));
     waitKey();
 }
 
 void zapretWizard() {
     clearScreen();
     printHeader(tr("Zapret для Discord/YouTube", "Zapret for Discord/YouTube"));
-    std::cout << tr(
+    out(tr(
         "Этот шаг ставит Flowseal zapret как Windows-сервис. Он может помочь Discord/YouTube.\n"
         "Если всё уже работает без него, можно пропустить.\n\n",
         "This step installs Flowseal zapret as a Windows service. It may help Discord/YouTube.\n"
-        "If everything already works without it, you can skip it.\n\n");
+        "If everything already works without it, you can skip it.\n\n"));
 
     if (!confirm(tr("Установить zapret-сервис?", "Install zapret service?"), false)) return;
     bool minecraft = confirm(tr("Добавить обход Minecraft порта 25565?", "Add Minecraft port 25565 bypass?"), false);
@@ -985,7 +1008,7 @@ void runInstallZapretFromArgs(bool minecraft) {
     try {
         installZapretService(minecraft);
     } catch (const std::exception& e) {
-        std::cerr << "ERROR: " << e.what() << "\n";
+        errOut(std::string("ERROR: ") + e.what() + "\n");
         waitKey();
     }
 }
@@ -1024,7 +1047,7 @@ void mainMenu() {
                 default: break;
             }
         } catch (const std::exception& e) {
-            std::cerr << "\nERROR: " << e.what() << "\n";
+            errOut(std::string("\nERROR: ") + e.what() + "\n");
             waitKey();
         }
     }
@@ -1035,8 +1058,6 @@ int main(int argc, char** argv) {
     SetConsoleCP(CP_UTF8);
     enableVirtualTerminal();
     std::ios::sync_with_stdio(false);
-    std::cout.setf(std::ios::unitbuf);
-
     bool installZapretArg = false;
     bool minecraftArg = false;
     bool printHelp = false;
@@ -1051,16 +1072,16 @@ int main(int argc, char** argv) {
     }
 
     if (printVersion) {
-        std::cout << "VovaVPN Hiddify Setup Tool " << kVersion << "\n";
+        out(std::string("VovaVPN Hiddify Setup Tool ") + kVersion + "\n");
         return 0;
     }
 
     if (printHelp) {
-        std::cout << "VovaVPN Hiddify Setup Tool " << kVersion << "\n"
-                  << "Usage:\n"
-                  << "  hiddify_settings_tool.exe\n"
-                  << "  hiddify_settings_tool.exe --version\n"
-                  << "  hiddify_settings_tool.exe --install-zapret [--minecraft]\n";
+        out(std::string("VovaVPN Hiddify Setup Tool ") + kVersion + "\n"
+            "Usage:\n"
+            "  hiddify_settings_tool.exe\n"
+            "  hiddify_settings_tool.exe --version\n"
+            "  hiddify_settings_tool.exe --install-zapret [--minecraft]\n");
         return 0;
     }
 
