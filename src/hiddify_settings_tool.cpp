@@ -24,13 +24,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.9.0";
+static const char* kVersion = "2.9.1";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.9.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.8.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.9.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.8.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -608,14 +608,24 @@ void ensureHiddifyAlwaysRunAsAdmin() {
     }
 
     if (configured == 0) return;
-
-    out(tr(
-        "Hiddify будет всегда запускаться от имени администратора, даже после закрытия мастера.\n",
-        "Hiddify will always request administrator rights when launched, even after this tool is closed.\n"));
 }
 
 bool validDownloadedFile(const fs::path& out) {
     return fs::exists(out) && fs::file_size(out) > 512;
+}
+
+bool isGithubReleaseUrl(const std::string& url) {
+    return url.find("github.com") != std::string::npos &&
+           url.find("/releases/download/") != std::string::npos;
+}
+
+bool downloadWithCurl(const std::string& url, const fs::path& out, int& curlCode) {
+    std::wstring curl =
+        L"curl.exe -L --fail --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors "
+        L"--connect-timeout 20 --max-time 120 --tlsv1.2 --ssl-no-revoke -A \"VovaVPN-Setup/" + widen(kVersion) + L"\" "
+        L"-o " + quoteCmd(out) + L" " + quoteCmdString(widen(url));
+    curlCode = runProcess(curl, true);
+    return curlCode == 0 && validDownloadedFile(out);
 }
 
 std::optional<fs::path> findDownloadedHiddifyInstaller() {
@@ -646,12 +656,24 @@ void downloadFile(const std::string& url, const fs::path& out) {
     fs::create_directories(out.parent_path());
     fs::remove(out);
 
-    HRESULT urlmonCode = URLDownloadToFileW(nullptr, widen(url).c_str(), out.c_str(), 0, nullptr);
-    if (SUCCEEDED(urlmonCode) && validDownloadedFile(out)) {
+    HRESULT urlmonCode = E_FAIL;
+    int bitsCode = -1;
+    int webClientCode = -1;
+    int curlCode = -1;
+    const bool githubRelease = isGithubReleaseUrl(url);
+
+    if (githubRelease && downloadWithCurl(url, out, curlCode)) {
         return;
     }
-
     fs::remove(out);
+
+    if (!githubRelease) {
+        urlmonCode = URLDownloadToFileW(nullptr, widen(url).c_str(), out.c_str(), 0, nullptr);
+        if (SUCCEEDED(urlmonCode) && validDownloadedFile(out)) {
+            return;
+        }
+        fs::remove(out);
+    }
     std::wstring bits =
         L"$ErrorActionPreference='Stop'; "
         L"$ProgressPreference='SilentlyContinue'; "
@@ -682,9 +704,9 @@ void downloadFile(const std::string& url, const fs::path& out) {
     fs::remove(out);
     std::wstring curl =
         L"curl.exe -L --fail --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors "
-        L"--connect-timeout 20 --tlsv1.2 --ssl-no-revoke -A \"VovaVPN-Setup/" + widen(kVersion) + L"\" "
+        L"--connect-timeout 20 --max-time 120 --tlsv1.2 --ssl-no-revoke -A \"VovaVPN-Setup/" + widen(kVersion) + L"\" "
         L"-o " + quoteCmd(out) + L" " + quoteCmdString(widen(url));
-    int curlCode = runProcess(curl, true);
+    curlCode = runProcess(curl, true);
     if (curlCode == 0 && validDownloadedFile(out)) {
         return;
     }
@@ -708,7 +730,6 @@ void installHiddifyIfNeeded() {
 
     auto existing = findHiddifyExe();
     if (existing) {
-        ensureHiddifyAlwaysRunAsAdmin();
         out(tr("Hiddify найден:\n", "Hiddify found:\n") + narrow(existing->wstring()) + "\n");
         waitKey();
         return;
@@ -765,7 +786,6 @@ void installHiddifyIfNeeded() {
     fs::remove_all(temp);
 
     if (findHiddifyExe()) {
-        ensureHiddifyAlwaysRunAsAdmin();
         out(tr("Hiddify установлен.\n", "Hiddify is installed.\n"));
     } else {
         out(tr("Я не смог автоматически найти Hiddify после установки. Если он открылся, это нормально.\n",

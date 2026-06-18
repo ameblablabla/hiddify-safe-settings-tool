@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.1 - GitHub Download Hang Hotfix
+
+- Reverted bundled settings and zapret URLs back to the stable `v2.8.0` release assets.
+- Fixed hangs on `Скачиваю настройки VovaVPN...` by skipping `URLDownloadToFileW` for GitHub release downloads and using timed `curl` first.
+- Kept only the silent persistent Hiddify run-as-admin registry setup from `2.9.0`.
+
 ## 2.9.0 - Persistent Hiddify Run As Administrator
 
 - The setup tool now writes Windows AppCompat `RUNASADMIN` flags for Hiddify executables.
