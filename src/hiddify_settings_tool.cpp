@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cwctype>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
@@ -16,19 +17,20 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <conio.h>
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.8.0";
+static const char* kVersion = "2.9.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.8.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.9.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.8.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.9.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -441,6 +443,177 @@ std::optional<fs::path> findHiddifyExe() {
     return std::nullopt;
 }
 
+const wchar_t* kAppCompatLayersKey =
+    L"Software\\Microsoft\\Windows NT\\CurrentVersion\\AppCompatFlags\\Layers";
+
+bool pathLooksLikeHiddifyW(const std::wstring& value) {
+    std::wstring low = value;
+    std::transform(low.begin(), low.end(), low.begin(), [](wchar_t c) { return (wchar_t)std::towlower(c); });
+    return low.find(L"hiddify") != std::wstring::npos;
+}
+
+bool registrySetRunAsAdmin(const fs::path& exePath) {
+    std::error_code ec;
+    fs::path target = exePath;
+    if (fs::exists(exePath, ec)) {
+        target = fs::weakly_canonical(exePath, ec);
+        if (ec) target = exePath;
+    }
+
+    HKEY hKey = nullptr;
+    LSTATUS st = RegCreateKeyExW(
+        HKEY_CURRENT_USER,
+        kAppCompatLayersKey,
+        0,
+        nullptr,
+        0,
+        KEY_READ | KEY_WRITE,
+        nullptr,
+        &hKey,
+        nullptr);
+    if (st != ERROR_SUCCESS) return false;
+
+    const std::wstring name = target.wstring();
+    wchar_t buffer[1024]{};
+    DWORD type = 0;
+    DWORD size = sizeof(buffer);
+    std::wstring flags = L"RUNASADMIN";
+
+    st = RegGetValueW(hKey, nullptr, name.c_str(), RRF_RT_REG_SZ, &type, buffer, &size);
+    if (st == ERROR_SUCCESS) {
+        std::wstring existing(buffer);
+        if (existing.find(L"RUNASADMIN") != std::wstring::npos) {
+            RegCloseKey(hKey);
+            return true;
+        }
+        flags = existing + L" RUNASADMIN";
+    }
+
+    st = RegSetValueExW(
+        hKey,
+        name.c_str(),
+        0,
+        REG_SZ,
+        reinterpret_cast<const BYTE*>(flags.c_str()),
+        static_cast<DWORD>((flags.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(hKey);
+    return st == ERROR_SUCCESS;
+}
+
+void addHiddifyExeForAdmin(std::unordered_set<std::wstring>& seen, std::vector<fs::path>& out, const fs::path& candidate) {
+    if (!candidate.has_filename()) return;
+
+    std::error_code ec;
+    fs::path resolved = candidate;
+    if (fs::exists(candidate, ec)) {
+        resolved = fs::weakly_canonical(candidate, ec);
+        if (ec) resolved = candidate;
+    }
+
+    const std::wstring key = resolved.wstring();
+    if (!seen.insert(key).second) return;
+    out.push_back(resolved);
+}
+
+void addHiddifyCliCandidates(std::unordered_set<std::wstring>& seen, std::vector<fs::path>& out) {
+    const fs::path local = appDataLocal();
+    const fs::path pf = programFiles();
+    const fs::path pfx86 = programFilesX86();
+
+    const std::vector<fs::path> bases = {
+        local / "Programs" / "Hiddify",
+        local / "Hiddify",
+        pf.empty() ? fs::path() : pf / "Hiddify",
+        pf.empty() ? fs::path() : pf / "hiddify",
+        pfx86.empty() ? fs::path() : pfx86 / "Hiddify",
+    };
+
+    for (const auto& base : bases) {
+        if (base.empty()) continue;
+        addHiddifyExeForAdmin(seen, out, base / "HiddifyCli.exe");
+    }
+}
+
+void collectHiddifyFromUninstall(
+    HKEY root,
+    const wchar_t* subkey,
+    std::unordered_set<std::wstring>& seen,
+    std::vector<fs::path>& out) {
+    HKEY hive = nullptr;
+    if (RegOpenKeyExW(root, subkey, 0, KEY_READ, &hive) != ERROR_SUCCESS) return;
+
+    wchar_t childName[256];
+    DWORD childLen = 0;
+    DWORD index = 0;
+    while (true) {
+        childLen = 256;
+        if (RegEnumKeyExW(hive, index++, childName, &childLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS) {
+            break;
+        }
+
+        HKEY appKey = nullptr;
+        if (RegOpenKeyExW(hive, childName, 0, KEY_READ, &appKey) != ERROR_SUCCESS) continue;
+
+        wchar_t buffer[MAX_PATH * 2]{};
+        DWORD size = sizeof(buffer);
+
+        size = sizeof(buffer);
+        if (RegGetValueW(appKey, nullptr, L"DisplayIcon", RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS) {
+            std::wstring icon(buffer);
+            const auto comma = icon.find(L',');
+            if (comma != std::wstring::npos) icon = icon.substr(0, comma);
+            if (pathLooksLikeHiddifyW(icon)) addHiddifyExeForAdmin(seen, out, fs::path(icon));
+        }
+
+        size = sizeof(buffer);
+        if (RegGetValueW(appKey, nullptr, L"InstallLocation", RRF_RT_REG_SZ, nullptr, buffer, &size) == ERROR_SUCCESS) {
+            if (pathLooksLikeHiddifyW(buffer)) {
+                fs::path installLocation(buffer);
+                addHiddifyExeForAdmin(seen, out, installLocation / "Hiddify.exe");
+                addHiddifyExeForAdmin(seen, out, installLocation / "HiddifyNext.exe");
+                addHiddifyExeForAdmin(seen, out, installLocation / "HiddifyCli.exe");
+            }
+        }
+
+        RegCloseKey(appKey);
+    }
+
+    RegCloseKey(hive);
+}
+
+std::vector<fs::path> hiddifyExecutablesForAdminLaunch() {
+    std::unordered_set<std::wstring> seen;
+    std::vector<fs::path> out;
+
+    for (const auto& candidate : hiddifyExeCandidates()) {
+        addHiddifyExeForAdmin(seen, out, candidate);
+    }
+    addHiddifyCliCandidates(seen, out);
+
+    collectHiddifyFromUninstall(
+        HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", seen, out);
+    collectHiddifyFromUninstall(
+        HKEY_LOCAL_MACHINE, L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall", seen, out);
+    collectHiddifyFromUninstall(
+        HKEY_CURRENT_USER, L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall", seen, out);
+
+    return out;
+}
+
+void ensureHiddifyAlwaysRunAsAdmin() {
+    const auto executables = hiddifyExecutablesForAdminLaunch();
+    int configured = 0;
+    for (const auto& exe : executables) {
+        if (registrySetRunAsAdmin(exe)) configured++;
+    }
+
+    if (configured == 0) return;
+
+    out(tr(
+        "Hiddify будет всегда запускаться от имени администратора, даже после закрытия мастера.\n",
+        "Hiddify will always request administrator rights when launched, even after this tool is closed.\n"));
+}
+
 bool validDownloadedFile(const fs::path& out) {
     return fs::exists(out) && fs::file_size(out) > 512;
 }
@@ -535,6 +708,7 @@ void installHiddifyIfNeeded() {
 
     auto existing = findHiddifyExe();
     if (existing) {
+        ensureHiddifyAlwaysRunAsAdmin();
         out(tr("Hiddify найден:\n", "Hiddify found:\n") + narrow(existing->wstring()) + "\n");
         waitKey();
         return;
@@ -591,6 +765,7 @@ void installHiddifyIfNeeded() {
     fs::remove_all(temp);
 
     if (findHiddifyExe()) {
+        ensureHiddifyAlwaysRunAsAdmin();
         out(tr("Hiddify установлен.\n", "Hiddify is installed.\n"));
     } else {
         out(tr("Я не смог автоматически найти Hiddify после установки. Если он открылся, это нормально.\n",
@@ -1265,6 +1440,11 @@ int main(int argc, char** argv) {
     }
 
     chooseLanguage();
+    try {
+        ensureHiddifyAlwaysRunAsAdmin();
+    } catch (const std::exception& e) {
+        errOut(std::string("Run-as-admin warning: ") + e.what() + "\n");
+    }
     mainMenu();
     return 0;
 }

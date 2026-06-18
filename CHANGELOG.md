@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.9.0 - Persistent Hiddify Run As Administrator
+
+- The setup tool now writes Windows AppCompat `RUNASADMIN` flags for Hiddify executables.
+- Hiddify keeps requesting administrator rights from any shortcut or launch path, even after the setup tool is closed.
+- Covers `Hiddify.exe`, `HiddifyNext.exe`, and `HiddifyCli.exe` across common install locations and uninstall registry entries.
+- Updated bundled settings and zapret release URLs to `v2.9.0`.
+
 ## 2.8.0 - Zapret Installer Diagnostics
 
 - Reworked zapret service installation to generate and run `vovavpn-install-service.ps1` instead of passing one large hidden PowerShell command.
