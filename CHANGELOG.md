@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.4.0 - Windows Downloader and Encoding Hotfix
+
+- Fixed Russian console text turning into question marks on some Windows systems by forcing UTF-8 input/output during build.
+- Replaced the visible first-step `curl` download with Windows URL downloader first.
+- Added BITS, WebClient, and hidden `curl` fallback download paths.
+- Added a browser fallback for Hiddify: if automatic download is blocked, the tool opens the official installer URL and then tries to find the downloaded installer in `Downloads`.
+- Updated bundled settings and zapret release URLs to `v2.4.0`.
+
 ## 2.3.0 - GitHub Download Hotfix
 
 - Fixed Hiddify installer downloads from GitHub release assets.

@@ -2,6 +2,7 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <urlmon.h>
 
 #include <algorithm>
 #include <cctype>
@@ -21,13 +22,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.3.0";
+static const char* kVersion = "2.4.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.2.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.4.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.2.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.4.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -198,6 +199,11 @@ bool launchAndWaitElevated(const fs::path& file, const std::wstring& parameters 
     return true;
 }
 
+bool openUrlInBrowser(const std::string& url) {
+    HINSTANCE result = ShellExecuteW(nullptr, L"open", widen(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    return (INT_PTR)result > 32;
+}
+
 void enableVirtualTerminal() {
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
     DWORD mode = 0;
@@ -358,32 +364,92 @@ std::optional<fs::path> findHiddifyExe() {
     return std::nullopt;
 }
 
+bool validDownloadedFile(const fs::path& out) {
+    return fs::exists(out) && fs::file_size(out) > 512;
+}
+
+std::optional<fs::path> findDownloadedHiddifyInstaller() {
+    const char* profile = std::getenv("USERPROFILE");
+    if (!profile) return std::nullopt;
+
+    fs::path downloads = fs::path(profile) / "Downloads";
+    if (!fs::exists(downloads)) return std::nullopt;
+
+    std::optional<fs::path> newest;
+    fs::file_time_type newestTime{};
+    for (const auto& entry : fs::directory_iterator(downloads)) {
+        if (!entry.is_regular_file()) continue;
+        fs::path p = entry.path();
+        std::string name = lowerCopy(p.filename().string());
+        if (name.rfind("hiddify-windows-setup-x64", 0) != 0 || p.extension() != ".exe") continue;
+        if (!validDownloadedFile(p)) continue;
+        auto time = fs::last_write_time(p);
+        if (!newest || time > newestTime) {
+            newest = p;
+            newestTime = time;
+        }
+    }
+    return newest;
+}
+
 void downloadFile(const std::string& url, const fs::path& out) {
     fs::create_directories(out.parent_path());
     fs::remove(out);
 
-    std::wstring curl =
-        L"curl.exe -L --fail --show-error --retry 3 --retry-delay 2 "
-        L"--connect-timeout 20 -A \"VovaVPN-Setup/" + widen(kVersion) + L"\" "
-        L"-o " + quoteCmd(out) + L" " + quoteCmdString(widen(url));
-    int curlCode = runProcess(curl, false);
-    if (curlCode == 0 && fs::exists(out) && fs::file_size(out) > 512) {
+    HRESULT urlmonCode = URLDownloadToFileW(nullptr, widen(url).c_str(), out.c_str(), 0, nullptr);
+    if (SUCCEEDED(urlmonCode) && validDownloadedFile(out)) {
         return;
     }
 
     fs::remove(out);
-    std::wstring ps =
+    std::wstring bits =
         L"$ErrorActionPreference='Stop'; "
         L"$ProgressPreference='SilentlyContinue'; "
-        L"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
-        L"$headers=@{'User-Agent'='VovaVPN-Setup/" + widen(kVersion) + L"'}; "
-        L"Invoke-WebRequest -UseBasicParsing -Headers $headers -MaximumRedirection 10 -Uri " + quotePsString(widen(url)) +
-        L" -OutFile " + quotePs(out) + L"; "
+        L"Import-Module BitsTransfer -ErrorAction SilentlyContinue; "
+        L"Start-BitsTransfer -Source " + quotePsString(widen(url)) +
+        L" -Destination " + quotePs(out) + L" -ErrorAction Stop; "
         L"if (!(Test-Path " + quotePs(out) + L") -or ((Get-Item " + quotePs(out) + L").Length -le 512)) { exit 2 }";
-    int psCode = runPowerShell(ps, false);
-    if (psCode != 0 || !fs::exists(out) || fs::file_size(out) <= 512) {
-        throw std::runtime_error("Download failed: " + url + " (curl exit " + std::to_string(curlCode) + ", powershell exit " + std::to_string(psCode) + ")");
+    int bitsCode = runPowerShell(bits, true);
+    if (bitsCode == 0 && validDownloadedFile(out)) {
+        return;
     }
+
+    fs::remove(out);
+    std::wstring webClient =
+        L"$ErrorActionPreference='Stop'; "
+        L"$ProgressPreference='SilentlyContinue'; "
+        L"[Net.ServicePointManager]::SecurityProtocol="
+        L"[Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls; "
+        L"$wc=New-Object Net.WebClient; "
+        L"$wc.Headers['User-Agent']='VovaVPN-Setup/" + widen(kVersion) + L"'; "
+        L"$wc.DownloadFile(" + quotePsString(widen(url)) + L", " + quotePs(out) + L"); "
+        L"if (!(Test-Path " + quotePs(out) + L") -or ((Get-Item " + quotePs(out) + L").Length -le 512)) { exit 2 }";
+    int webClientCode = runPowerShell(webClient, true);
+    if (webClientCode == 0 && validDownloadedFile(out)) {
+        return;
+    }
+
+    fs::remove(out);
+    std::wstring curl =
+        L"curl.exe -L --fail --silent --show-error --retry 5 --retry-delay 2 --retry-all-errors "
+        L"--connect-timeout 20 --tlsv1.2 --ssl-no-revoke -A \"VovaVPN-Setup/" + widen(kVersion) + L"\" "
+        L"-o " + quoteCmd(out) + L" " + quoteCmdString(widen(url));
+    int curlCode = runProcess(curl, true);
+    if (curlCode == 0 && validDownloadedFile(out)) {
+        return;
+    }
+
+    if (!validDownloadedFile(out)) {
+        fs::remove(out);
+    }
+
+    std::ostringstream error;
+    error << "Download failed: " << url
+          << " (urlmon 0x" << std::hex << (unsigned long)urlmonCode << std::dec
+          << ", bits exit " << bitsCode
+          << ", webclient exit " << webClientCode
+          << ", curl exit " << curlCode << ")";
+    throw std::runtime_error(error.str());
 }
 
 void installHiddifyIfNeeded() {
@@ -406,7 +472,29 @@ void installHiddifyIfNeeded() {
     fs::path temp = makeTempDir("hiddify-installer");
     fs::path installer = temp / "Hiddify-Windows-Setup-x64.exe";
     std::cout << tr("Скачиваю установщик...\n", "Downloading installer...\n");
-    downloadFile(kHiddifyInstallerUrl, installer);
+    try {
+        downloadFile(kHiddifyInstallerUrl, installer);
+    } catch (const std::exception& e) {
+        std::cout << "\n" << tr(
+            "Автоскачивание заблокировано Windows или сетью. Открою официальный файл в браузере.\n"
+            "Дождитесь скачивания, затем вернитесь сюда и нажмите любую клавишу. Я попробую найти файл в Downloads и запустить его.\n\n",
+            "Automatic download was blocked by Windows or the network. I will open the official file in the browser.\n"
+            "Wait for the download, then return here and press any key. I will try to find it in Downloads and start it.\n\n");
+        std::cout << "DETAILS: " << e.what() << "\n";
+        openUrlInBrowser(kHiddifyInstallerUrl);
+        waitKey();
+
+        auto downloaded = findDownloadedHiddifyInstaller();
+        if (!downloaded) {
+            fs::remove_all(temp);
+            std::cout << tr(
+                "Не нашёл установщик Hiddify в Downloads. Скачайте его в браузере и запустите вручную, потом снова откройте мастер VovaVPN.\n",
+                "I did not find the Hiddify installer in Downloads. Download and run it manually, then open VovaVPN setup again.\n");
+            waitKey();
+            return;
+        }
+        installer = *downloaded;
+    }
 
     std::cout << tr("Запускаю установщик. Пройдите установку и вернитесь в это окно.\n",
                      "Starting the installer. Finish setup, then return to this window.\n");

@@ -19,6 +19,6 @@ if (-not $gpp) {
   $gpp = $gpp.Source
 }
 
-& $gpp -std=c++17 -O2 -static -static-libgcc -static-libstdc++ $src -o $out -lcomdlg32 -lshell32 -lole32
+& $gpp -std=c++17 -O2 -static -static-libgcc -static-libstdc++ -finput-charset=UTF-8 -fexec-charset=UTF-8 $src -o $out -lcomdlg32 -lshell32 -lurlmon -lole32
 
 Write-Host "Built $out"
