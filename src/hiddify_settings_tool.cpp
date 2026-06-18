@@ -24,7 +24,7 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.9.1";
+static const char* kVersion = "2.9.2";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
@@ -271,11 +271,22 @@ void enableVirtualTerminal() {
     }
 }
 
+void initConsoleEncoding() {
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+    enableVirtualTerminal();
+}
+
+bool isConsoleHandle(HANDLE handle) {
+    if (handle == INVALID_HANDLE_VALUE || handle == nullptr) return false;
+    DWORD mode = 0;
+    return GetConsoleMode(handle, &mode) != 0;
+}
+
 void writeUtf8(HANDLE handle, const std::string& text) {
     if (text.empty()) return;
 
-    DWORD mode = 0;
-    if (handle != INVALID_HANDLE_VALUE && GetConsoleMode(handle, &mode)) {
+    if (isConsoleHandle(handle)) {
         std::wstring wide = widen(text);
         DWORD written = 0;
         WriteConsoleW(handle, wide.c_str(), (DWORD)wide.size(), &written, nullptr);
@@ -1324,6 +1335,9 @@ void installZapretServiceDirect(const fs::path& zapretDir, const fs::path& strat
 }
 
 void installZapretService(bool minecraft) {
+    initConsoleEncoding();
+    SetConsoleTitleW(widen(tr("VovaVPN — установка zapret", "VovaVPN zapret setup")).c_str());
+
     if (!isAdmin()) {
         fs::path self;
         wchar_t buf[MAX_PATH]{};
@@ -1331,6 +1345,7 @@ void installZapretService(bool minecraft) {
         self = buf;
         std::wstring args = L"--install-zapret";
         if (minecraft) args += L" --minecraft";
+        if (gLang == Lang::En) args += L" --en";
         out(tr("Для установки сервиса нужны права администратора. Сейчас появится UAC.\n",
                "Administrator rights are required to install the service. UAC will appear now.\n"));
         launchAndWaitElevated(self, args);
@@ -1371,9 +1386,8 @@ void fullSetupWizard() {
 }
 
 void runInstallZapretFromArgs(bool minecraft) {
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-    enableVirtualTerminal();
+    initConsoleEncoding();
+    SetConsoleTitleW(widen(tr("VovaVPN — установка zapret", "VovaVPN zapret setup")).c_str());
     try {
         installZapretService(minecraft);
     } catch (const std::exception& e) {
@@ -1423,9 +1437,7 @@ void mainMenu() {
 }
 
 int main(int argc, char** argv) {
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-    enableVirtualTerminal();
+    initConsoleEncoding();
     std::ios::sync_with_stdio(false);
     bool installZapretArg = false;
     bool minecraftArg = false;

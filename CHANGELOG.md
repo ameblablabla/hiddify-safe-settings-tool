@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.2 - Zapret Elevated Console Encoding
+
+- Fixed broken Cyrillic text in the elevated zapret install popup console.
+- Console output now always goes through Unicode `WriteConsoleW` instead of raw UTF-8 bytes.
+- Elevated zapret child process reuses the selected language and sets a proper UTF-8 console title.
+
 ## 2.9.1 - GitHub Download Hang Hotfix
 
 - Reverted bundled settings and zapret URLs back to the stable `v2.8.0` release assets.
