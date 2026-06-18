@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.8.0 - Zapret Installer Diagnostics
+
+- Reworked zapret service installation to generate and run `vovavpn-install-service.ps1` instead of passing one large hidden PowerShell command.
+- The installer now creates `vovavpn-install-service.log` before starting PowerShell, so service-install failures no longer disappear without diagnostics.
+- Added richer service logs, including `sc.exe` output and recent Service Control Manager events.
+- Updated bundled settings and zapret release URLs to `v2.8.0`.
+
 ## 2.7.0 - Zapret Empty Filter Hotfix
 
 - Fixed zapret service startup failure when `GameFilterTCP` / `GameFilterUDP` were empty.

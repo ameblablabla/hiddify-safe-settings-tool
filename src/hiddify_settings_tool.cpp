@@ -22,13 +22,13 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.7.0";
+static const char* kVersion = "2.8.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.7.0/hiddify-app-settings.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.8.0/hiddify-app-settings.zip";
 static const char* kZapretBundleUrl =
-    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.7.0/vovavpn-zapret.zip";
+    "https://github.com/ameblablabla/hiddify-safe-settings-tool/releases/download/v2.8.0/vovavpn-zapret.zip";
 static const wchar_t* kZapretDefaultDir = L"C:\\zapret\\vovavpn-zapret";
 
 static const std::vector<std::string> kSensitiveKeyParts = {
@@ -233,6 +233,10 @@ int runProcess(const std::wstring& command, bool hidden = false) {
 
 int runPowerShell(const std::wstring& command, bool hidden = true) {
     return runProcess(L"powershell.exe -NoProfile -ExecutionPolicy Bypass -Command " + command, hidden);
+}
+
+int runPowerShellFile(const fs::path& script, bool hidden = true) {
+    return runProcess(L"powershell.exe -NoProfile -ExecutionPolicy Bypass -File " + quoteCmd(script), hidden);
 }
 
 bool launchAndWaitElevated(const fs::path& file, const std::wstring& parameters = L"") {
@@ -1060,38 +1064,67 @@ void installZapretServiceDirect(const fs::path& zapretDir, const fs::path& strat
     std::string args = extractWinwsArgsFromStrategy(strategy, zapretDir);
     std::wstring binPath = L"\"" + winws.wstring() + L"\" " + widen(args);
     fs::path logPath = zapretDir / "vovavpn-install-service.log";
+    fs::path scriptPath = zapretDir / "vovavpn-install-service.ps1";
 
-    std::wstring ps =
-        L"$ErrorActionPreference='Stop'; "
-        L"$log=" + quotePs(logPath) + L"; "
-        L"'VovaVPN zapret service install' | Set-Content -LiteralPath $log -Encoding UTF8; "
-        L"Set-Location -LiteralPath " + quotePs(zapretDir) + L"; "
-        L"Stop-Process -Name winws -Force -ErrorAction SilentlyContinue; "
-        L"sc.exe stop zapret 2>&1 | Add-Content -LiteralPath $log; "
-        L"sc.exe delete zapret 2>&1 | Add-Content -LiteralPath $log; "
-        L"sc.exe stop WinDivert 2>&1 | Add-Content -LiteralPath $log; "
-        L"sc.exe delete WinDivert 2>&1 | Add-Content -LiteralPath $log; "
-        L"sc.exe stop WinDivert14 2>&1 | Add-Content -LiteralPath $log; "
-        L"sc.exe delete WinDivert14 2>&1 | Add-Content -LiteralPath $log; "
-        L"netsh interface tcp set global timestamps=enabled 2>&1 | Add-Content -LiteralPath $log; "
-        L"$binPath=" + quotePsString(binPath) + L"; "
-        L"'BINPATH:' | Add-Content -LiteralPath $log; "
-        L"$binPath | Add-Content -LiteralPath $log; "
-        L"$createOut = sc.exe create zapret binPath= $binPath DisplayName= 'zapret' start= auto 2>&1; "
-        L"$createOut | Add-Content -LiteralPath $log; "
-        L"if ($LASTEXITCODE -ne 0) { throw ($createOut -join \"`n\") }; "
-        L"sc.exe description zapret 'Zapret DPI bypass software' 2>&1 | Add-Content -LiteralPath $log; "
-        L"reg.exe add 'HKLM\\System\\CurrentControlSet\\Services\\zapret' /v zapret-discord-youtube /t REG_SZ /d '000-vovavpn' /f 2>&1 | Add-Content -LiteralPath $log; "
-        L"$startOut = sc.exe start zapret 2>&1; "
-        L"$startOut | Add-Content -LiteralPath $log; "
-        L"Start-Sleep -Seconds 2; "
-        L"$query = sc.exe query zapret; "
-        L"$query | Add-Content -LiteralPath $log; "
-        L"if (($query -join \"`n\") -notmatch 'RUNNING') { throw (($startOut + $query) -join \"`n\") }; ";
+    std::wstring ps;
+    ps += L"$ErrorActionPreference = 'Stop'\r\n";
+    ps += L"$log = " + quotePs(logPath) + L"\r\n";
+    ps += L"function Log([object]$value) {\r\n";
+    ps += L"  if ($null -eq $value) { return }\r\n";
+    ps += L"  $value | Out-String | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"}\r\n";
+    ps += L"Set-Content -LiteralPath $log -Value 'VovaVPN zapret service install " + widen(kVersion) + L"' -Encoding UTF8\r\n";
+    ps += L"try {\r\n";
+    ps += L"  Log ('Started: ' + (Get-Date -Format o))\r\n";
+    ps += L"  Log ('ZapretDir: " + zapretDir.wstring() + L"')\r\n";
+    ps += L"  Set-Location -LiteralPath " + quotePs(zapretDir) + L"\r\n";
+    ps += L"  Stop-Process -Name winws -Force -ErrorAction SilentlyContinue\r\n";
+    ps += L"  foreach ($svc in @('zapret', 'WinDivert', 'WinDivert14')) {\r\n";
+    ps += L"    Log ('Stopping service: ' + $svc)\r\n";
+    ps += L"    & sc.exe stop $svc 2>&1 | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"    Start-Sleep -Milliseconds 500\r\n";
+    ps += L"    Log ('Deleting service: ' + $svc)\r\n";
+    ps += L"    & sc.exe delete $svc 2>&1 | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"  }\r\n";
+    ps += L"  Start-Sleep -Seconds 1\r\n";
+    ps += L"  & netsh interface tcp set global timestamps=enabled 2>&1 | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"  $binPath = " + quotePsString(binPath) + L"\r\n";
+    ps += L"  Log 'BINPATH:'\r\n";
+    ps += L"  Log $binPath\r\n";
+    ps += L"  $createOut = & sc.exe create zapret binPath= $binPath DisplayName= 'zapret' start= auto 2>&1\r\n";
+    ps += L"  $createExit = $LASTEXITCODE\r\n";
+    ps += L"  Log $createOut\r\n";
+    ps += L"  if ($createExit -ne 0) { throw ('sc create failed with exit ' + $createExit + ': ' + ($createOut -join \"`n\")) }\r\n";
+    ps += L"  & sc.exe description zapret 'Zapret DPI bypass software' 2>&1 | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"  & reg.exe add 'HKLM\\System\\CurrentControlSet\\Services\\zapret' /v zapret-discord-youtube /t REG_SZ /d '000-vovavpn' /f 2>&1 | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"  $startOut = & sc.exe start zapret 2>&1\r\n";
+    ps += L"  $startExit = $LASTEXITCODE\r\n";
+    ps += L"  Log $startOut\r\n";
+    ps += L"  Start-Sleep -Seconds 3\r\n";
+    ps += L"  $query = & sc.exe query zapret 2>&1\r\n";
+    ps += L"  Log $query\r\n";
+    ps += L"  if (($query -join \"`n\") -notmatch 'RUNNING') { throw ('zapret is not RUNNING. sc start exit ' + $startExit + ': ' + (($startOut + $query) -join \"`n\")) }\r\n";
+    ps += L"  Log 'SUCCESS: zapret service is running.'\r\n";
+    ps += L"  exit 0\r\n";
+    ps += L"} catch {\r\n";
+    ps += L"  Log 'ERROR:'\r\n";
+    ps += L"  Log $_.Exception.Message\r\n";
+    ps += L"  try {\r\n";
+    ps += L"    Log 'Recent Service Control Manager events:'\r\n";
+    ps += L"    Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Service Control Manager'; StartTime=(Get-Date).AddMinutes(-10)} -MaxEvents 12 |\r\n";
+    ps += L"      Select-Object TimeCreated, Id, Message | Format-List | Out-String | Add-Content -LiteralPath $log -Encoding UTF8\r\n";
+    ps += L"  } catch {\r\n";
+    ps += L"    Log ('Could not read Service Control Manager events: ' + $_.Exception.Message)\r\n";
+    ps += L"  }\r\n";
+    ps += L"  exit 1\r\n";
+    ps += L"}\r\n";
 
-    int code = runPowerShell(ps, true);
+    writeFile(scriptPath, narrow(ps));
+    writeFile(logPath, "VovaVPN zapret service install " + std::string(kVersion) + "\r\nPrepared script: " + narrow(scriptPath.wstring()) + "\r\n");
+
+    int code = runPowerShellFile(scriptPath, true);
     if (code != 0) {
-        throw std::runtime_error("Failed to install or start zapret service");
+        throw std::runtime_error("Failed to install or start zapret service. Log: " + narrow(logPath.wstring()));
     }
 }
 
