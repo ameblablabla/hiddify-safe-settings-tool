@@ -681,7 +681,7 @@ void downloadFile(const std::string& url, const fs::path& out) {
         L"Start-BitsTransfer -Source " + quotePsString(widen(url)) +
         L" -Destination " + quotePs(out) + L" -ErrorAction Stop; "
         L"if (!(Test-Path " + quotePs(out) + L") -or ((Get-Item " + quotePs(out) + L").Length -le 512)) { exit 2 }";
-    int bitsCode = runPowerShell(bits, true);
+    bitsCode = runPowerShell(bits, true);
     if (bitsCode == 0 && validDownloadedFile(out)) {
         return;
     }
@@ -696,7 +696,7 @@ void downloadFile(const std::string& url, const fs::path& out) {
         L"$wc.Headers['User-Agent']='VovaVPN-Setup/" + widen(kVersion) + L"'; "
         L"$wc.DownloadFile(" + quotePsString(widen(url)) + L", " + quotePs(out) + L"); "
         L"if (!(Test-Path " + quotePs(out) + L") -or ((Get-Item " + quotePs(out) + L").Length -le 512)) { exit 2 }";
-    int webClientCode = runPowerShell(webClient, true);
+    webClientCode = runPowerShell(webClient, true);
     if (webClientCode == 0 && validDownloadedFile(out)) {
         return;
     }
