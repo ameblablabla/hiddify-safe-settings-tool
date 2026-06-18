@@ -21,7 +21,7 @@
 
 namespace fs = std::filesystem;
 
-static const char* kVersion = "2.2.0";
+static const char* kVersion = "2.3.0";
 static const char* kHiddifyInstallerUrl =
     "https://github.com/hiddify/hiddify-app/releases/download/v4.1.1/Hiddify-Windows-Setup-x64.exe";
 static const char* kSafeSettingsUrl =
@@ -140,6 +140,16 @@ std::wstring quoteCmd(const fs::path& path) {
     std::wstring s = path.wstring();
     std::wstring out = L"\"";
     for (wchar_t c : s) {
+        if (c == L'"') out += L"\\\"";
+        else out += c;
+    }
+    out += L"\"";
+    return out;
+}
+
+std::wstring quoteCmdString(const std::wstring& input) {
+    std::wstring out = L"\"";
+    for (wchar_t c : input) {
         if (c == L'"') out += L"\\\"";
         else out += c;
     }
@@ -350,15 +360,29 @@ std::optional<fs::path> findHiddifyExe() {
 
 void downloadFile(const std::string& url, const fs::path& out) {
     fs::create_directories(out.parent_path());
+    fs::remove(out);
+
+    std::wstring curl =
+        L"curl.exe -L --fail --show-error --retry 3 --retry-delay 2 "
+        L"--connect-timeout 20 -A \"VovaVPN-Setup/" + widen(kVersion) + L"\" "
+        L"-o " + quoteCmd(out) + L" " + quoteCmdString(widen(url));
+    int curlCode = runProcess(curl, false);
+    if (curlCode == 0 && fs::exists(out) && fs::file_size(out) > 512) {
+        return;
+    }
+
+    fs::remove(out);
     std::wstring ps =
+        L"$ErrorActionPreference='Stop'; "
         L"$ProgressPreference='SilentlyContinue'; "
         L"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
-        L"Invoke-WebRequest -UseBasicParsing -Uri " + quotePsString(widen(url)) +
+        L"$headers=@{'User-Agent'='VovaVPN-Setup/" + widen(kVersion) + L"'}; "
+        L"Invoke-WebRequest -UseBasicParsing -Headers $headers -MaximumRedirection 10 -Uri " + quotePsString(widen(url)) +
         L" -OutFile " + quotePs(out) + L"; "
-        L"if (!(Test-Path " + quotePs(out) + L")) { exit 2 }";
-    int code = runPowerShell(ps, true);
-    if (code != 0 || !fs::exists(out)) {
-        throw std::runtime_error("Download failed: " + url);
+        L"if (!(Test-Path " + quotePs(out) + L") -or ((Get-Item " + quotePs(out) + L").Length -le 512)) { exit 2 }";
+    int psCode = runPowerShell(ps, false);
+    if (psCode != 0 || !fs::exists(out) || fs::file_size(out) <= 512) {
+        throw std::runtime_error("Download failed: " + url + " (curl exit " + std::to_string(curlCode) + ", powershell exit " + std::to_string(psCode) + ")");
     }
 }
 
@@ -698,27 +722,26 @@ fs::path ensureZapretDownloaded() {
     if (auto found = findZapretDir()) return *found;
 
     fs::path target = kZapretDefaultDir;
+    fs::path temp = makeTempDir("vovavpn-zapret");
+    fs::path archive = temp / "vovavpn-zapret.zip";
+    fs::path extract = temp / "extract";
+
+    std::cout << tr("Скачиваю VovaVPN zapret...\n", "Downloading VovaVPN zapret...\n");
+    downloadFile(kZapretBundleUrl, archive);
+
     std::wstring ps =
         L"$ErrorActionPreference='Stop'; "
-        L"$ProgressPreference='SilentlyContinue'; "
-        L"[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; "
         L"$target=" + quotePs(target) + L"; "
-        L"$tmp=Join-Path $env:TEMP ('vovavpn-zapret-' + [guid]::NewGuid().ToString()); "
-        L"$zip=Join-Path $tmp 'zapret.zip'; "
-        L"New-Item -ItemType Directory -Path $tmp -Force | Out-Null; "
-        L"$headers=@{'User-Agent'='VovaVPN-Setup'}; "
-        L"Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri " + quotePsString(widen(kZapretBundleUrl)) + L" -OutFile $zip; "
-        L"$extract=Join-Path $tmp 'extract'; "
-        L"Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force; "
+        L"$extract=" + quotePs(extract) + L"; "
+        L"Expand-Archive -LiteralPath " + quotePs(archive) + L" -DestinationPath $extract -Force; "
         L"$service=Get-ChildItem -LiteralPath $extract -Recurse -Filter service.bat | Select-Object -First 1; "
         L"if (-not $service) { throw 'service.bat was not found in archive' }; "
         L"$src=Split-Path -Parent $service.FullName; "
         L"New-Item -ItemType Directory -Path $target -Force | Out-Null; "
-        L"Copy-Item -LiteralPath (Join-Path $src '*') -Destination $target -Recurse -Force; "
-        L"Remove-Item -LiteralPath $tmp -Recurse -Force; ";
+        L"Copy-Item -LiteralPath (Join-Path $src '*') -Destination $target -Recurse -Force; ";
 
-    std::cout << tr("Скачиваю VovaVPN zapret...\n", "Downloading VovaVPN zapret...\n");
     int code = runPowerShell(ps, false);
+    fs::remove_all(temp);
     if (code != 0 || !validVovaZapretDir(target)) {
         throw std::runtime_error("Failed to download or unpack VovaVPN zapret");
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.3.0 - GitHub Download Hotfix
+
+- Fixed Hiddify installer downloads from GitHub release assets.
+- Added `curl.exe` download path with redirects, retries, User-Agent, and visible errors.
+- Kept PowerShell download as a fallback instead of the only method.
+- Reused the same robust downloader for the VovaVPN zapret archive.
+- Added downloaded file size validation before running installers or extracting archives.
+
 ## 2.2.0 - Mini App Owns Key Copy
 
 - Removed VPN config copy/import from the default setup wizard.
